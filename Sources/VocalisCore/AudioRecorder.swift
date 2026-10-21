@@ -94,7 +94,12 @@ public final class AudioRecorder: NSObject {
         let device = MicDevices.device(uid: preferredDeviceUID)
         let alreadyWarm = device?.isBluetooth == true
             && MicDevices.isBluetoothRouteWarm(uid: preferredDeviceUID)
-        let activation = MicDevices.activateInput(uid: preferredDeviceUID)
+        // Always claim BT on hold — Continuity often keeps AirPods on another Mac until
+        // this Mac plays/records through them (defaults alone are not enough).
+        let activation = MicDevices.activateInput(
+            uid: preferredDeviceUID,
+            claimHeadset: device?.isBluetooth == true
+        )
         if previousOutputUID == nil {
             previousOutputUID = activation.previousOutputUID
         }
@@ -107,9 +112,9 @@ public final class AudioRecorder: NSObject {
         sawAudibleSignal = false
         silenceRestarts = 0
 
-        // HFP/SCO needs a beat to come up; too short → first words OK then silence.
+        // HFP/SCO + Continuity handoff need a beat; claim path always waits.
         if isBluetoothSession, activation.routeChanged || !alreadyWarm {
-            try? await Task.sleep(nanoseconds: alreadyWarm ? 80_000_000 : 350_000_000)
+            try? await Task.sleep(nanoseconds: alreadyWarm ? 200_000_000 : 450_000_000)
         }
 
         try startCapture(device: device)
@@ -289,7 +294,7 @@ public final class AudioRecorder: NSObject {
         sawAudibleSignal = false
         setLevel(0)
         do {
-            _ = MicDevices.activateInput(uid: preferredDeviceUID)
+            _ = MicDevices.activateInput(uid: preferredDeviceUID, claimHeadset: true)
             let device = MicDevices.device(uid: preferredDeviceUID)
             // Always AudioQueue after a stall — engine is what usually died.
             try startCapture(device: device, forceAudioQueue: true)

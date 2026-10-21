@@ -1,6 +1,8 @@
 import AVFoundation
+import AudioToolbox
 import CoreAudio
 import Foundation
+import IOBluetooth
 
 public struct MicDevice: Equatable, Identifiable, Sendable {
     public var id: String { uid }
@@ -105,10 +107,16 @@ public enum MicDevices {
     /// to the same device so macOS switches into headset/HFP mode — otherwise the
     /// mic often stays silent while A2DP playback is active.
     ///
+    /// When `claimHeadset` is true (dictation start), also nudge Continuity so AirPods
+    /// leave another Mac and attach here — setting defaults alone often is not enough.
+    ///
     /// `routeChanged` is false when input (and BT output) were already correct — callers
-    /// should skip settle delays in that case.
+    /// should skip settle delays in that case (unless a claim nudge ran).
     @discardableResult
-    public static func activateInput(uid: String) -> (ok: Bool, previousOutputUID: String?, routeChanged: Bool) {
+    public static func activateInput(
+        uid: String,
+        claimHeadset: Bool = false
+    ) -> (ok: Bool, previousOutputUID: String?, routeChanged: Bool) {
         let target = device(uid: uid)
         guard let target else { return (true, nil, false) }
 
@@ -132,7 +140,17 @@ public enum MicDevices {
             let outID = matchingOutputDeviceID(forInput: target) ?? target.coreAudioID
             if currentOut != outID {
                 routeChanged = true
-                _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: outID)
+            }
+            // Always re-assert output + system output — Continuity may still be on another Mac.
+            _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: outID)
+            _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultSystemOutputDevice, id: outID)
+
+            if claimHeadset {
+                openPairedBluetoothConnection(matching: target.name)
+                // Brief near-silence on the headset output — same signal Music uses to steal AirPods.
+                playHandoffNudge(onOutputDevice: outID)
+                routeChanged = true
+                NSLog("Vocalis: claimed Bluetooth headset (\(target.name)) for Continuity handoff")
             }
         }
 
@@ -166,6 +184,86 @@ public enum MicDevices {
     }
 
     // MARK: - Private
+
+    /// Ask the paired BT device to connect (helps when another Mac still owns AirPods).
+    private static func openPairedBluetoothConnection(matching inputName: String) {
+        let base = inputName
+            .replacingOccurrences(of: " Microphone", with: "")
+            .replacingOccurrences(of: " Mic", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !base.isEmpty,
+              let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
+        for device in paired {
+            guard let name = device.name, !name.isEmpty else { continue }
+            let hit = name.localizedCaseInsensitiveContains(base)
+                || base.localizedCaseInsensitiveContains(name)
+            guard hit else { continue }
+            if device.isConnected() {
+                NSLog("Vocalis: Bluetooth \(name) already connected")
+            } else {
+                let status = device.openConnection()
+                NSLog("Vocalis: Bluetooth openConnection \(name) → \(status)")
+            }
+            return
+        }
+    }
+
+    /// Play ~120ms of digital silence on the headset output to trigger AirPods auto-switch.
+    private static func playHandoffNudge(onOutputDevice deviceID: AudioDeviceID) {
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: 16_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        var queue: AudioQueueRef?
+        let status = AudioQueueNewOutput(
+            &asbd,
+            { _, _, _ in },
+            nil,
+            nil,
+            nil,
+            0,
+            &queue
+        )
+        guard status == noErr, let queue else {
+            NSLog("Vocalis: handoff nudge queue failed (\(status))")
+            return
+        }
+        defer {
+            AudioQueueStop(queue, true)
+            AudioQueueDispose(queue, true)
+        }
+
+        var id = deviceID
+        let sz = UInt32(MemoryLayout<AudioDeviceID>.size)
+        _ = withUnsafePointer(to: &id) { ptr in
+            AudioQueueSetProperty(queue, kAudioQueueProperty_CurrentDevice, ptr, sz)
+        }
+
+        let frames: UInt32 = 512
+        let bytes = frames * 4
+        for _ in 0..<3 {
+            var buf: AudioQueueBufferRef?
+            guard AudioQueueAllocateBuffer(queue, bytes, &buf) == noErr, let buf else { continue }
+            let raw = UnsafeMutableRawBufferPointer(
+                start: buf.pointee.mAudioData,
+                count: Int(bytes)
+            )
+            raw.initializeMemory(as: UInt8.self, repeating: 0)
+            buf.pointee.mAudioDataByteSize = bytes
+            AudioQueueEnqueueBuffer(queue, buf, 0, nil)
+        }
+        guard AudioQueueStart(queue, nil) == noErr else { return }
+        // Block briefly so Continuity sees active output I/O on this Mac.
+        Thread.sleep(forTimeInterval: 0.12)
+        AudioQueueStop(queue, true)
+    }
 
     private static func matchingOutputDeviceID(forInput device: MicDevice) -> AudioDeviceID? {
         // AirPods often expose separate input/output objects that share a name prefix.
