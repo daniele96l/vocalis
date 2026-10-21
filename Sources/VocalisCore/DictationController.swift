@@ -223,10 +223,22 @@ public final class DictationController {
                 } else {
                     text = transcriptText
                 }
-                try Paster.paste(text)
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                bubble.hide()
+
+                // Archive + clipboard always succeed before ⌘V — never lose the words.
+                let result = try Paster.deliver(
+                    text,
+                    archiveNote: ModelCatalog.isCleanupEnabled(config.cleanupModel) ? "cleaned" : "raw"
+                )
+                switch result {
+                case .pasted:
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    bubble.hide()
+                case .clipboardOnly:
+                    showNotice("On clipboard · ⌘V", seconds: 3.2)
+                }
             } catch {
+                // If we already have transcript text in a nested failure, it's archived by deliver.
+                // For earlier failures, surface the error only.
                 showError(shortError(error))
             }
         }
@@ -251,11 +263,15 @@ public final class DictationController {
     }
 
     private func showError(_ message: String) {
+        showNotice(message, seconds: 2.0)
+    }
+
+    private func showNotice(_ message: String, seconds: Double) {
         stopMeter()
         bubble.show(.error(message))
         errorHideTask?.cancel()
         errorHideTask = Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             if !Task.isCancelled {
                 bubble.hide()
             }

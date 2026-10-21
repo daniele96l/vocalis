@@ -17,5 +17,7 @@ config.toml
 **/config.toml
 usage.jsonl
 **/usage.jsonl
+last_dictation.txt
+dictations.log
 *.key
 secrets/

@@ -49,6 +49,8 @@ Prefer `OPENAI_API_KEY` in the environment; the file key is a fallback. On first
 
 **Never commit API keys.** They live only in `~/.config/vocalis/config.toml` (chmod 600) on each Mac — not in git, not in the DMG. `Scripts/check-no-secrets.sh` runs during DMG packaging.
 
+If paste fails (e.g. Accessibility off), the text stays on the **clipboard** and is written to `~/.config/vocalis/last_dictation.txt` (full history in `dictations.log`). Press ⌘V to recover.
+
 Legacy `~/.config/wispflow/config.toml` is migrated automatically on first load.
 
 ## Config

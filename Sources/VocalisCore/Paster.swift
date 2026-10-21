@@ -13,27 +13,40 @@ public enum PasterError: LocalizedError {
     }
 }
 
+public enum PasteResult: Equatable, Sendable {
+    /// ⌘V was posted; text is also on the clipboard and archived.
+    case pasted
+    /// Could not synthesize paste — text is on the clipboard + archived for recovery.
+    case clipboardOnly
+}
+
 public enum Paster {
     public static func isAccessibilityTrusted(prompt: Bool = false) -> Bool {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Sets clipboard then synthesizes ⌘V. Never call on failure paths.
+    /// Always archives + copies to clipboard first, then tries ⌘V.
+    /// Never restores the previous clipboard — that used to wipe the dictation on soft failures.
     @MainActor
-    public static func paste(_ text: String) throws {
+    @discardableResult
+    public static func deliver(_ text: String, archiveNote: String = "") throws -> PasteResult {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw PasterError.emptyText }
-        guard isAccessibilityTrusted(prompt: false) else {
-            throw PasterError.accessibilityDenied
-        }
+
+        DictationArchive.save(trimmed, note: archiveNote.isEmpty ? "deliver" : archiveNote)
 
         let pasteboard = NSPasteboard.general
-        let previous = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(trimmed, forType: .string)
+        NSLog("Vocalis: dictation on clipboard (\(trimmed.count) chars)")
 
-        // Small delay so the target app sees the new clipboard.
+        guard isAccessibilityTrusted(prompt: false) else {
+            NSLog("Vocalis: Accessibility off — paste skipped; text kept on clipboard + last_dictation.txt")
+            return .clipboardOnly
+        }
+
+        // Brief settle so the focused app sees the new clipboard.
         Thread.sleep(forTimeInterval: 0.05)
 
         let source = CGEventSource(stateID: .hidSystemState)
@@ -44,12 +57,13 @@ public enum Paster {
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
 
-        // Optionally restore previous clipboard after a beat (best-effort).
-        if let previous {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(previous, forType: .string)
-            }
-        }
+        NSLog("Vocalis: posted ⌘V")
+        return .pasted
+    }
+
+    /// Legacy name — prefer `deliver`.
+    @MainActor
+    public static func paste(_ text: String) throws {
+        _ = try deliver(text)
     }
 }

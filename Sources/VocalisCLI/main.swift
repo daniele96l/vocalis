@@ -166,6 +166,14 @@ enum VocalisCLI {
         print("  cleanup:    \(config.cleanupModel)")
         print("  hotkey:     \(config.hotkey)")
         print("  accessibility trusted: \(Paster.isAccessibilityTrusted(prompt: false))")
+        print("  last dictation: \(DictationArchive.lastDictationURL.path)")
+        if let last = DictationArchive.loadLast() {
+            let preview = last.count > 60 ? String(last.prefix(60)) + "…" : last
+            print("  last text:  \(preview.replacingOccurrences(of: "\n", with: " "))")
+        } else {
+            print("  last text:  (none yet)")
+        }
+        print("  dictation log: \(DictationArchive.logURL.path)")
         print("  app candidates:")
         for path in appCandidates() {
             let exists = FileManager.default.fileExists(atPath: path)
