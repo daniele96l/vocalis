@@ -921,6 +921,60 @@ struct HomeIdleWave: View {
     }
 }
 
+// MARK: - License field (AppKit — reliable ⌘V)
+
+struct LicenseCodeField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: text)
+        field.placeholderString = placeholder
+        field.isBordered = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.isEditable = true
+        field.isSelectable = true
+        field.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        field.focusRingType = .default
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.commit(_:))
+        // Explicit paste menu / ⌘V path — do not rely on SwiftUI TextField.
+        field.allowsEditingTextAttributes = false
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if field.placeholderString != placeholder {
+            field.placeholderString = placeholder
+        }
+        if field.stringValue != text, field.currentEditor() == nil {
+            field.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: LicenseCodeField
+
+        init(_ parent: LicenseCodeField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        @objc func commit(_ sender: NSTextField) {
+            parent.text = sender.stringValue
+        }
+    }
+}
+
 // MARK: - Account (license + API keys)
 
 struct AccountSettingsView: View {
@@ -968,24 +1022,29 @@ struct AccountSettingsView: View {
                                 .textSelection(.enabled)
                         }
 
-                        // Plain TextField (not SecureField) so the code is visible and ⌘V / paste works.
-                        TextField(
-                            config.usesLicense ? "Replace license…" : "VOC-XXXX-XXXX-XXXX",
-                            text: $pastedLicense
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 13, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textSelection(.enabled)
+                        // AppKit field — SwiftUI TextField often blocks ⌘V in menubar/accessory apps.
+                        LicenseCodeField(text: $pastedLicense, placeholder: config.usesLicense ? "Replace license…" : "VOC-XXXX-XXXX-XXXX")
+                            .frame(height: 28)
+
+                        if !pastedLicense.isEmpty {
+                            Text(pastedLicense)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                        }
 
                         HStack(spacing: 8) {
-                            Button("Paste") { pasteLicenseFromClipboard() }
-                                .buttonStyle(QuietButtonStyle())
-                            Button("Activate license") { saveLicense() }
+                            Button("Paste & activate") { pasteAndActivateLicense() }
                                 .buttonStyle(AccentButtonStyle())
-                                .disabled(pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Button("Paste only") { pasteLicenseFromClipboard() }
+                                .buttonStyle(QuietButtonStyle())
+                            if !pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Button("Activate") { saveLicense() }
+                                    .buttonStyle(QuietButtonStyle())
+                            }
                             if config.usesLicense {
-                                Button("Clear license") { clearLicense() }
+                                Button("Clear") { clearLicense() }
                                     .buttonStyle(QuietButtonStyle())
                             }
                         }
@@ -1145,17 +1204,41 @@ struct AccountSettingsView: View {
     }
 
     private func pasteLicenseFromClipboard() {
-        guard let raw = NSPasteboard.general.string(forType: .string) else {
-            state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
-            return
-        }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard let trimmed = readClipboardText() else {
             state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
             return
         }
         pastedLicense = trimmed
-        state.statusMessage = "Pasted — tap Activate license."
+        state.statusMessage = "Pasted — tap Activate (or use Paste & activate)."
+    }
+
+    private func pasteAndActivateLicense() {
+        guard let trimmed = readClipboardText() else {
+            state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
+            return
+        }
+        pastedLicense = trimmed
+        saveLicense()
+    }
+
+    /// Reads plain text from the pasteboard, including Continuity / rich-text copies.
+    private func readClipboardText() -> String? {
+        let pb = NSPasteboard.general
+        let candidates: [String?] = [
+            pb.string(forType: .string),
+            pb.string(forType: .tabularText),
+            pb.pasteboardItems?.compactMap { item in
+                item.string(forType: .string)
+                    ?? item.string(forType: NSPasteboard.PasteboardType("public.utf8-plain-text"))
+                    ?? item.string(forType: NSPasteboard.PasteboardType("public.utf16-plain-text"))
+            }.first,
+        ]
+        for raw in candidates {
+            guard let raw else { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
 
     private func maskedLicense(_ code: String) -> String {
