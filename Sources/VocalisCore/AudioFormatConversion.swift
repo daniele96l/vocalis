@@ -27,7 +27,12 @@ enum AudioFormatConversion {
 
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("vocalis-grok-\(UUID().uuidString).wav")
-        let outFile = try AVAudioFile(forWriting: outURL, settings: outFormat.settings)
+        let outFile = try AVAudioFile(
+            forWriting: outURL,
+            settings: outFormat.settings,
+            commonFormat: outFormat.commonFormat,
+            interleaved: outFormat.isInterleaved
+        )
 
         if inFormat.commonFormat == .pcmFormatInt16, inFormat.channelCount == 1 {
             try outFile.write(from: inBuffer)

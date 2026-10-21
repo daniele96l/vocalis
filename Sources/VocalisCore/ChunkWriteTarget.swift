@@ -20,17 +20,25 @@ final class ChunkWriteTarget: @unchecked Sendable {
         self.makeURL = makeURL
         let url = makeURL()
         self.url = url
-        self.file = try AVAudioFile(forWriting: url, settings: format.settings)
+        // Must set commonFormat to match buffers we write. The settings-only
+        // initializer defaults processingFormat to float32 — writing int16 then
+        // trips ExtAudioFile/CABufferList (SIGTRAP) on the AudioQueue thread.
+        self.file = try Self.openFile(url: url, format: format)
     }
 
     func write(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         defer { lock.unlock() }
+        guard buffer.format.commonFormat == format.commonFormat,
+              buffer.format.channelCount == format.channelCount else {
+            return
+        }
         do {
             try file.write(from: buffer)
             framesWritten += AVAudioFramePosition(buffer.frameLength)
         } catch {
             // Drop buffer rather than crash the audio thread.
+            NSLog("Vocalis: chunk write failed: \(error.localizedDescription)")
         }
     }
 
@@ -49,7 +57,7 @@ final class ChunkWriteTarget: @unchecked Sendable {
         let sealed = url
         let sealedFrames = framesWritten
         let newURL = makeURL()
-        let newFile = try AVAudioFile(forWriting: newURL, settings: format.settings)
+        let newFile = try Self.openFile(url: newURL, format: format)
         // Release old file (flush/close) by replacing references.
         file = newFile
         url = newURL
@@ -63,5 +71,14 @@ final class ChunkWriteTarget: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return url
+    }
+
+    private static func openFile(url: URL, format: AVAudioFormat) throws -> AVAudioFile {
+        try AVAudioFile(
+            forWriting: url,
+            settings: format.settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
     }
 }
