@@ -1,5 +1,29 @@
 import Foundation
 
+public struct DictationDebugEvent: Sendable {
+    public enum Status: Sendable {
+        case running
+        case ok
+        case fail
+    }
+
+    public let label: String
+    public let detail: String
+    public let status: Status
+
+    public init(label: String, detail: String, status: Status) {
+        self.label = label
+        self.detail = detail
+        self.status = status
+    }
+}
+
+public struct DictationDebugResult: Sendable {
+    public let rawTranscript: String
+    public let finalText: String
+    public let audioBytes: Int
+}
+
 @MainActor
 public final class DictationController {
     public let bubble = BubbleOverlayController()
@@ -8,10 +32,14 @@ public final class DictationController {
     public private(set) var hotkey: HotkeyMonitor
     private var processing = false
     private var starting = false
+    private var debugActive = false
     private var errorHideTask: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
     private var holdTask: Task<Void, Never>?
     private var liveTranscriber: LiveTranscriber?
+    private var debugLevelHandler: ((Float, String) -> Void)?
+
+    public var isDebugCapturing: Bool { debugActive && recorder.isRecording }
 
     public var isHotkeyTapInstalled: Bool { hotkey.isTapInstalled }
     public var hotkeyStartError: String? { hotkey.lastStartError }
@@ -104,6 +132,7 @@ public final class DictationController {
     }
 
     private func beginHold() {
+        guard !debugActive else { return }
         guard !processing else { return }
         errorHideTask?.cancel()
         holdTask?.cancel()
@@ -163,6 +192,7 @@ public final class DictationController {
     }
 
     private func endHold() {
+        if debugActive { return }
         stopMeter()
         holdTask?.cancel()
         holdTask = nil
@@ -310,5 +340,212 @@ public final class DictationController {
             return String(localized.prefix(28))
         }
         return "Failed"
+    }
+
+    private func detailError(_ error: Error) -> String {
+        if let client = error as? OpenAIClientError {
+            switch client {
+            case .http(let code, let body):
+                let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return "HTTP \(code)" }
+                return "HTTP \(code): \(String(trimmed.prefix(240)))"
+            case .missingKey, .emptyAudio, .emptyTranscript, .decode:
+                return client.errorDescription ?? "Failed"
+            }
+        }
+        if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+            return localized
+        }
+        return String(describing: error)
+    }
+
+    // MARK: - Debug probe (Settings → Debug)
+
+    /// One-shot capture for the Debug tab — no live chunking, no paste.
+    public func startDebugCapture(
+        onEvent: @escaping @MainActor (DictationDebugEvent) -> Void,
+        onLevel: @escaping @MainActor (Float, String) -> Void
+    ) async {
+        guard !debugActive, !processing, !recorder.isRecording else {
+            onEvent(.init(label: "Busy", detail: "Finish the current dictation first.", status: .fail))
+            return
+        }
+
+        debugActive = true
+        debugLevelHandler = onLevel
+        reloadConfig()
+
+        let auth = config.usesLicense ? "license → \(config.resolvedLicenseProxyURL)" : "own keys"
+        onEvent(.init(
+            label: "Config",
+            detail: "\(auth) · STT \(config.sttModel) · cleanup \(config.cleanupModel)/\(config.resolvedCleanupStyle.rawValue)",
+            status: .ok
+        ))
+
+        if !recorder.hasMicPermission {
+            onEvent(.init(label: "Microphone", detail: "Requesting permission…", status: .running))
+            let granted = await recorder.requestPermission()
+            guard granted else {
+                onEvent(.init(label: "Microphone", detail: "Permission denied", status: .fail))
+                debugActive = false
+                debugLevelHandler = nil
+                return
+            }
+        }
+        onEvent(.init(label: "Microphone", detail: "Permission OK", status: .ok))
+
+        guard config.hasTranscriptionKey else {
+            onEvent(.init(
+                label: "Auth",
+                detail: config.usesGrokSTT ? "Need xAI key or license" : "Need OpenAI key or license",
+                status: .fail
+            ))
+            debugActive = false
+            debugLevelHandler = nil
+            return
+        }
+        onEvent(.init(
+            label: "Auth",
+            detail: config.usesLicense ? "License ready" : (config.usesGrokSTT ? "xAI key ready" : "OpenAI key ready"),
+            status: .ok
+        ))
+
+        do {
+            recorder.onChunkSealed = nil
+            recorder.chunkSeconds = 0
+            recorder.preferredDeviceUID = config.inputDeviceID
+            onEvent(.init(label: "Record", detail: "Starting…", status: .running))
+            try await recorder.start()
+            let mic = recorder.activeDeviceName
+            onEvent(.init(label: "Record", detail: "Listening on \(mic.isEmpty ? "default input" : mic)", status: .ok))
+            startDebugMeter()
+        } catch {
+            onEvent(.init(label: "Record", detail: detailError(error), status: .fail))
+            debugActive = false
+            debugLevelHandler = nil
+        }
+    }
+
+    public func cancelDebugCapture() {
+        guard debugActive else { return }
+        stopMeter()
+        debugLevelHandler = nil
+        if recorder.isRecording {
+            recorder.cancel()
+        }
+        debugActive = false
+    }
+
+    public func finishDebugCapture(
+        onEvent: @escaping @MainActor (DictationDebugEvent) -> Void
+    ) async -> DictationDebugResult {
+        stopMeter()
+        debugLevelHandler = nil
+
+        guard debugActive, recorder.isRecording else {
+            debugActive = false
+            onEvent(.init(label: "Record", detail: "Not recording", status: .fail))
+            return DictationDebugResult(rawTranscript: "", finalText: "", audioBytes: 0)
+        }
+
+        processing = true
+        defer {
+            processing = false
+            debugActive = false
+        }
+
+        do {
+            let audioURL = try recorder.stop()
+            defer { try? FileManager.default.removeItem(at: audioURL) }
+
+            let bytes: Int = {
+                let n = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? NSNumber)?.intValue
+                return n ?? 0
+            }()
+            onEvent(.init(
+                label: "Audio",
+                detail: String(format: "%d bytes (%.1f KB)", bytes, Double(bytes) / 1024),
+                status: bytes > 800 ? .ok : .fail
+            ))
+            if bytes <= 800 {
+                onEvent(.init(label: "STT", detail: "Skipped — recording too small", status: .fail))
+                return DictationDebugResult(rawTranscript: "", finalText: "", audioBytes: bytes)
+            }
+
+            reloadConfig()
+            let client = OpenAIClient(config: config)
+            let route = config.usesLicense
+                ? (config.usesGrokSTT ? "proxy /v1/stt (Grok)" : "proxy /v1/audio/transcriptions")
+                : (config.usesGrokSTT ? "api.x.ai/v1/stt" : "api.openai.com transcriptions")
+            onEvent(.init(label: "STT", detail: "Sending to \(route)…", status: .running))
+
+            let transcript: TranscriptionResult
+            do {
+                transcript = try await client.transcribe(audioURL: audioURL)
+            } catch {
+                onEvent(.init(label: "STT", detail: detailError(error), status: .fail))
+                return DictationDebugResult(rawTranscript: "", finalText: "", audioBytes: bytes)
+            }
+
+            let raw = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.isEmpty {
+                onEvent(.init(label: "STT", detail: "Empty transcript from \(transcript.model)", status: .fail))
+                return DictationDebugResult(rawTranscript: "", finalText: "", audioBytes: bytes)
+            }
+            onEvent(.init(
+                label: "STT",
+                detail: "\(raw.count) chars · \(transcript.model)" + (transcript.durationSeconds > 0
+                    ? String(format: " · %.1fs audio", transcript.durationSeconds)
+                    : ""),
+                status: .ok
+            ))
+
+            var finalText = raw
+            if ModelCatalog.isCleanupEnabled(config.cleanupModel) {
+                if !config.usesLicense, !config.hasOpenAIKey {
+                    onEvent(.init(label: "Cleanup", detail: "Skipped — no OpenAI key", status: .fail))
+                } else {
+                    onEvent(.init(
+                        label: "Cleanup",
+                        detail: "\(config.cleanupModel) · \(config.resolvedCleanupStyle.rawValue)…",
+                        status: .running
+                    ))
+                    do {
+                        let cleaned = try await client.cleanup(text: raw)
+                        finalText = cleaned.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if finalText.isEmpty { finalText = raw }
+                        onEvent(.init(
+                            label: "Cleanup",
+                            detail: "\(finalText.count) chars · \(cleaned.model)",
+                            status: .ok
+                        ))
+                    } catch {
+                        onEvent(.init(label: "Cleanup", detail: detailError(error) + " — using raw", status: .fail))
+                        finalText = raw
+                    }
+                }
+            } else {
+                onEvent(.init(label: "Cleanup", detail: "Off — using raw transcript", status: .ok))
+            }
+
+            onEvent(.init(label: "Done", detail: "Result below (not pasted)", status: .ok))
+            return DictationDebugResult(rawTranscript: raw, finalText: finalText, audioBytes: bytes)
+        } catch {
+            onEvent(.init(label: "Audio", detail: detailError(error), status: .fail))
+            return DictationDebugResult(rawTranscript: "", finalText: "", audioBytes: 0)
+        }
+    }
+
+    private func startDebugMeter() {
+        stopMeter()
+        meterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let level = self.recorder.currentLevel()
+                let name = self.recorder.activeDeviceName
+                self.debugLevelHandler?(level, name)
+                try? await Task.sleep(nanoseconds: 40_000_000)
+            }
+        }
     }
 }

@@ -126,6 +126,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case languages = "Languages"
     case usage = "Usage"
     case setup = "Setup"
+    case debug = "Debug"
 
     var id: String { rawValue }
 }
@@ -322,6 +323,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         perm.target = self
         menu.addItem(perm)
 
+        let debug = NSMenuItem(title: "Debug…", action: #selector(showDebug), keyEquivalent: "")
+        debug.target = self
+        menu.addItem(debug)
+
         menu.addItem(.separator())
         let tip = NSMenuItem(
             title: "Hold \(appState.hotkeyLabel) to dictate",
@@ -343,6 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showLanguages() { openMain(tab: .languages) }
     @objc private func showUsage() { openMain(tab: .usage) }
     @objc private func showPermissions() { openMain(tab: .setup) }
+    @objc private func showDebug() { openMain(tab: .debug) }
 
     @objc private func quit() {
         Task { @MainActor in
@@ -374,10 +380,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        guard let controller else { return }
         let view = RootView(
             nav: nav,
             state: appState,
             permissions: permissions,
+            controller: controller,
             onRefresh: { [weak self] in
                 guard let app = self else { return }
                 Task { @MainActor in
@@ -436,7 +444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.setContentSize(NSSize(width: 500, height: 640))
+        window.setContentSize(NSSize(width: 560, height: 660))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = WindowCloseDelegate.shared
@@ -546,6 +554,7 @@ struct RootView: View {
     @ObservedObject var nav: AppNavigation
     @ObservedObject var state: AppState
     @ObservedObject var permissions: PermissionsModel
+    var controller: DictationController
     var onRefresh: () -> Void
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
@@ -558,7 +567,7 @@ struct RootView: View {
 
             VStack(spacing: 0) {
                 TabStrip(selection: $nav.tab)
-                    .padding(.horizontal, 22)
+                    .padding(.horizontal, 18)
                     .padding(.top, 44)
                     .padding(.bottom, 14)
 
@@ -615,13 +624,23 @@ struct RootView: View {
                             onGoAccount: { go(.account) }
                         )
                         .transition(tabTransition)
+                    case .debug:
+                        DebugSettingsView(
+                            state: state,
+                            permissions: permissions,
+                            controller: controller,
+                            onGoAccount: { go(.account) },
+                            onGoAI: { go(.ai) },
+                            onRefresh: onRefresh
+                        )
+                        .transition(tabTransition)
                     }
                 }
                 .animation(.spring(response: 0.38, dampingFraction: 0.88), value: nav.tab)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .frame(width: 540, height: 640)
+        .frame(width: 560, height: 660)
         .onAppear { onRefresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             onRefresh()
@@ -655,9 +674,9 @@ struct TabStrip: View {
                     }
                 } label: {
                     Text(tab.rawValue)
-                        .font(.system(size: 12, weight: selection == tab ? .semibold : .regular))
+                        .font(.system(size: 11, weight: selection == tab ? .semibold : .regular))
                         .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 9)
+                        .padding(.horizontal, 7)
                         .padding(.vertical, 7)
                         .contentShape(Rectangle())
                         .overlay(alignment: .bottom) {
@@ -1606,6 +1625,296 @@ struct UsageSettingsView: View {
             .padding(.bottom, 24)
         }
         .onAppear { onRefresh() }
+    }
+}
+
+// MARK: - Debug
+
+private struct DebugLogLine: Identifiable {
+    let id = UUID()
+    let time: Date
+    let label: String
+    let detail: String
+    let status: DictationDebugEvent.Status
+}
+
+struct DebugSettingsView: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var permissions: PermissionsModel
+    var controller: DictationController
+    var onGoAccount: () -> Void
+    var onGoAI: () -> Void
+    var onRefresh: () -> Void
+
+    @State private var config = VocalisConfig.load()
+    @State private var log: [DebugLogLine] = []
+    @State private var resultText = ""
+    @State private var rawText = ""
+    @State private var isRecording = false
+    @State private var isProcessing = false
+    @State private var level: Float = 0
+    @State private var micName = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                pageHeader(
+                    title: "Debug",
+                    subtitle: "Validate config, then speak a short test. Steps show where STT or cleanup fails — nothing is pasted."
+                )
+
+                settingsSectionLabel("Checklist")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        checkRow("Auth", config.usesLicense
+                            ? "Licensed"
+                            : (config.hasAPIKey ? "Own keys" : "Missing — open Account"), ok: config.hasAPIKey)
+                        checkRow("STT model", config.sttModel, ok: true)
+                        checkRow(
+                            "STT auth",
+                            config.hasTranscriptionKey
+                                ? (config.usesLicense ? "License / proxy" : (config.usesGrokSTT ? "xAI key" : "OpenAI key"))
+                                : "Missing",
+                            ok: config.hasTranscriptionKey
+                        )
+                        checkRow("Cleanup", ModelCatalog.isCleanupEnabled(config.cleanupModel)
+                            ? "\(config.cleanupModel) · \(config.resolvedCleanupStyle.rawValue)"
+                            : "Off", ok: true)
+                        checkRow("Microphone", state.micDeviceName, ok: state.micOK)
+                        checkRow("Input Monitoring", state.inputMonitoringOK ? "OK" : "Needed for hotkey", ok: state.inputMonitoringOK)
+                        if config.usesLicense {
+                            checkRow("Proxy", config.resolvedLicenseProxyURL, ok: true)
+                        }
+                    }
+                }
+
+                settingsSectionLabel("Speak test")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 10) {
+                            if isRecording {
+                                DebugLevelBars(level: level)
+                                    .frame(height: 28)
+                                Text(micName.isEmpty ? "Listening…" : micName)
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            } else {
+                                Text(isProcessing ? "Running STT / cleanup…" : "Press Start, speak, then Stop.")
+                                    .font(VocalisTheme.body)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+
+                        HStack(spacing: 8) {
+                            if isRecording {
+                                Button("Stop & run") { stopTest() }
+                                    .buttonStyle(AccentButtonStyle())
+                                    .disabled(isProcessing)
+                                Button("Cancel") { cancelTest() }
+                                    .buttonStyle(QuietButtonStyle())
+                                    .disabled(isProcessing)
+                            } else {
+                                Button("Start test") { startTest() }
+                                    .buttonStyle(AccentButtonStyle())
+                                    .disabled(isProcessing || !config.hasTranscriptionKey)
+                                Button("Clear log") {
+                                    log = []
+                                    resultText = ""
+                                    rawText = ""
+                                }
+                                .buttonStyle(QuietButtonStyle())
+                                .disabled(isProcessing)
+                            }
+                        }
+                    }
+                }
+
+                settingsSectionLabel("Steps")
+                GlassCard {
+                    if log.isEmpty {
+                        Text("No steps yet.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(log) { line in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: stepIcon(line.status))
+                                        .foregroundStyle(stepColor(line.status))
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .frame(width: 14)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        HStack(spacing: 6) {
+                                            Text(line.label)
+                                                .font(.system(size: 12, weight: .semibold))
+                                            Text(timeString(line.time))
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                        Text(line.detail)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                settingsSectionLabel("Result")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !rawText.isEmpty, rawText != resultText {
+                            Text("Raw STT")
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
+                            Text(rawText)
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Rectangle().fill(VocalisTheme.border).frame(height: 1)
+                        }
+                        TextField("Transcript appears here…", text: $resultText, axis: .vertical)
+                            .lineLimit(3...8)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .disabled(isRecording || isProcessing)
+                    }
+                }
+
+                HStack {
+                    Button("Account…") { onGoAccount() }
+                        .buttonStyle(QuietButtonStyle())
+                    Button("AI…") { onGoAI() }
+                        .buttonStyle(QuietButtonStyle())
+                    Spacer()
+                    Button("Refresh") {
+                        config = VocalisConfig.load()
+                        controller.reloadConfig()
+                        onRefresh()
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
+        }
+        .onAppear {
+            config = VocalisConfig.load()
+            controller.reloadConfig()
+            onRefresh()
+        }
+        .onDisappear {
+            if isRecording { controller.cancelDebugCapture() }
+        }
+    }
+
+    private func checkRow(_ title: String, _ value: String, ok: Bool) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(ok ? VocalisTheme.ok : VocalisTheme.warn)
+                .font(.system(size: 12))
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func append(_ event: DictationDebugEvent) {
+        log.append(DebugLogLine(time: Date(), label: event.label, detail: event.detail, status: event.status))
+    }
+
+    private func startTest() {
+        log = []
+        resultText = ""
+        rawText = ""
+        level = 0
+        micName = ""
+        isProcessing = false
+        config = VocalisConfig.load()
+        isRecording = true
+        Task { @MainActor in
+            await controller.startDebugCapture(
+                onEvent: { append($0) },
+                onLevel: { lvl, name in
+                    level = lvl
+                    micName = name
+                }
+            )
+            if !controller.isDebugCapturing {
+                isRecording = false
+            }
+        }
+    }
+
+    private func cancelTest() {
+        controller.cancelDebugCapture()
+        isRecording = false
+        level = 0
+        append(.init(label: "Cancelled", detail: "Recording discarded", status: .fail))
+    }
+
+    private func stopTest() {
+        isRecording = false
+        isProcessing = true
+        level = 0
+        Task { @MainActor in
+            let result = await controller.finishDebugCapture(onEvent: { append($0) })
+            rawText = result.rawTranscript
+            resultText = result.finalText
+            isProcessing = false
+            onRefresh()
+        }
+    }
+
+    private func stepIcon(_ status: DictationDebugEvent.Status) -> String {
+        switch status {
+        case .running: return "ellipsis.circle"
+        case .ok: return "checkmark.circle.fill"
+        case .fail: return "xmark.circle.fill"
+        }
+    }
+
+    private func stepColor(_ status: DictationDebugEvent.Status) -> Color {
+        switch status {
+        case .running: return .secondary
+        case .ok: return VocalisTheme.ok
+        case .fail: return VocalisTheme.warn
+        }
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
+    }
+}
+
+private struct DebugLevelBars: View {
+    var level: Float
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<12, id: \.self) { i in
+                let threshold = Float(i) / 12
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(level > threshold ? VocalisTheme.ok.opacity(0.85) : Color.secondary.opacity(0.2))
+                    .frame(width: 4, height: 8 + CGFloat(i) * 1.4)
+            }
+        }
+        .animation(.easeOut(duration: 0.05), value: level)
     }
 }
 
