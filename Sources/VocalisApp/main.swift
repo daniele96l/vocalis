@@ -1318,16 +1318,22 @@ struct AccountSettingsView: View {
 
     private func classifyLicenseError(_ error: Error) -> LicenseServerStatus {
         if let client = error as? OpenAIClientError {
+            // Only the Worker's explicit message means a bad code — not Cloudflare 403/1010.
+            if client.isLicenseRejected {
+                return .invalid("Proxy rejected this code (not on the server list).")
+            }
+            if client.isProxyBlocked {
+                return .unreachable("Cloudflare blocked the proxy (1010). Retry Refresh; check VPN/network.")
+            }
             switch client {
             case .http(let code, let body):
-                let lower = body.lowercased()
-                if lower.contains("invalid or missing license") || code == 401 || code == 403 {
-                    return .invalid("Proxy rejected this code (not in LICENSE_CODES).")
-                }
-                if code == 408 || lower.contains("timeout") {
+                let snippet = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                let short = snippet.isEmpty ? "HTTP \(code)" : "HTTP \(code): \(String(snippet.prefix(80)))"
+                if code == 408 {
                     return .unreachable("Proxy timed out — check network, then Refresh.")
                 }
-                return .unreachable("Proxy HTTP \(code).")
+                // 401 without our message, or any other status → connectivity / proxy issue
+                return .unreachable(short)
             case .missingKey:
                 return .none
             default:
@@ -1336,7 +1342,7 @@ struct AccountSettingsView: View {
         }
         let ns = error as NSError
         if ns.domain == NSURLErrorDomain {
-            return .unreachable("Network error — check internet, then Refresh.")
+            return .unreachable("Network error (\(ns.code)) — check internet, then Refresh.")
         }
         return .unreachable((error as? LocalizedError)?.errorDescription ?? "Could not reach proxy")
     }

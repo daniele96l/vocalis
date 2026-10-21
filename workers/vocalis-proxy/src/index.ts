@@ -34,9 +34,15 @@ export default {
       return jsonError(401, "Invalid or missing license");
     }
 
-    // Auth-only probe for the Debug tab (no upstream call).
-    if (request.method === "GET" && url.pathname === "/v1/license/verify") {
-      return Response.json({ ok: true }, { headers: corsHeaders() });
+    // Auth-only probe (Account / Debug). GET + POST — some clients block one or the other.
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      url.pathname === "/v1/license/verify"
+    ) {
+      return Response.json(
+        { ok: true, license: true },
+        { headers: corsHeaders() }
+      );
     }
 
     try {

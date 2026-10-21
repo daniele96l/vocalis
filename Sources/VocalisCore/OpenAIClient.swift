@@ -15,14 +15,40 @@ public enum OpenAIClientError: LocalizedError {
         case .emptyAudio: return "Empty recording"
         case .emptyTranscript: return "No speech found"
         case .http(let code, let body):
-            let lower = body.lowercased()
-            if lower.contains("invalid or missing license") {
-                return "Invalid license"
-            }
-            if code == 401 || code == 403 { return "Bad key or license" }
-            return "API \(code)"
+            return Self.describeHTTP(code: code, body: body)
         case .decode: return "Bad response"
         }
+    }
+
+    /// True only when the Worker explicitly rejected the license code.
+    public var isLicenseRejected: Bool {
+        if case .http(_, let body) = self {
+            return body.lowercased().contains("invalid or missing license")
+        }
+        return false
+    }
+
+    public var isProxyBlocked: Bool {
+        if case .http(_, let body) = self {
+            let lower = body.lowercased()
+            return lower.contains("error code: 1010")
+                || lower.contains("attention required")
+                || lower.contains("cloudflare")
+        }
+        return false
+    }
+
+    static func describeHTTP(code: Int, body: String) -> String {
+        let lower = body.lowercased()
+        if lower.contains("invalid or missing license") {
+            return "Invalid license"
+        }
+        if lower.contains("error code: 1010") {
+            return "Proxy blocked by Cloudflare (1010)"
+        }
+        if code == 401 { return "Bad key or license" }
+        if code == 403 { return "Proxy forbidden" }
+        return "API \(code)"
     }
 }
 
@@ -43,7 +69,19 @@ public final class OpenAIClient: Sendable {
     private let config: VocalisConfig
     private let session: URLSession
 
-    public init(config: VocalisConfig, session: URLSession = .shared) {
+    /// Explicit UA — some edges ban empty / Python-like agents (CF error 1010).
+    public static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 60
+        configuration.httpAdditionalHeaders = [
+            "User-Agent": "Vocalis/macOS (license-proxy)",
+            "Accept": "application/json",
+        ]
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }
+
+    public init(config: VocalisConfig, session: URLSession = OpenAIClient.makeSession()) {
         self.config = config
         self.session = session
     }
@@ -103,19 +141,22 @@ public final class OpenAIClient: Sendable {
     public func verifyLicense(code: String? = nil) async throws {
         let resolved = VocalisConfig.normalizeLicenseCode(code ?? config.licenseCode)
         guard !resolved.isEmpty else { throw OpenAIClientError.missingKey }
-        let base = (code != nil)
-            ? (config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? VocalisConfig.defaultLicenseProxyURL
-                : config.resolvedLicenseProxyURL)
-            : config.resolvedLicenseProxyURL
+        let base: String = {
+            let trimmed = config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return VocalisConfig.defaultLicenseProxyURL }
+            return config.resolvedLicenseProxyURL
+        }()
         guard let url = URL(string: "\(base)/v1/license/verify") else {
             throw OpenAIClientError.decode
         }
+        // POST avoids odd GET filtering on some networks; Worker accepts both.
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 15
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(resolved)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
         let (data, response) = try await session.data(for: request)
         try Self.throwIfNeeded(data: data, response: response)
     }
