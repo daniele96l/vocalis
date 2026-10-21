@@ -70,7 +70,10 @@ function bearerToken(request: Request): string {
   return match?.[1]?.trim() ?? "";
 }
 
-/** Strip quotes/whitespace/Bearer, keep VOC-… shape, uppercase. */
+/**
+ * Strip paste junk and canonicalize to VOC-XXXX-XXXX-XXXX.
+ * Rich-text pastes often use en-dashes; those used to strip hyphens and fail match.
+ */
 function normalizeLicense(raw: string): string {
   let s = raw.trim();
   if (/^Bearer\s+/i.test(s)) s = s.replace(/^Bearer\s+/i, "").trim();
@@ -80,20 +83,36 @@ function normalizeLicense(raw: string): string {
   ) {
     s = s.slice(1, -1).trim();
   }
-  // Drop zero-width / non-ASCII junk from rich-text paste.
+  // Unicode dashes / minus → ASCII hyphen before stripping junk.
+  s = s.replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-");
   s = s.replace(/[^\w-]+/g, "");
-  return s.toUpperCase();
+  s = s.toUpperCase();
+
+  // VOC + 12 hex (with or without hyphens) → VOC-XXXX-XXXX-XXXX
+  const compact = s.replace(/-/g, "");
+  const m = /^VOC([0-9A-F]{12})$/.exec(compact);
+  if (m) {
+    const h = m[1]!;
+    return `VOC-${h.slice(0, 4)}-${h.slice(4, 8)}-${h.slice(8, 12)}`;
+  }
+  return s;
 }
 
 /** Timing-safe membership check against comma-separated LICENSE_CODES. */
 async function licenseAllowed(candidate: string, rawList: string | undefined): Promise<boolean> {
   if (!candidate || !rawList) return false;
+  const normalized = normalizeLicense(candidate);
+  if (!normalized) return false;
   const codes = rawList
     .split(/[,;\s]+/)
     .map((c) => normalizeLicense(c))
     .filter(Boolean);
   for (const code of codes) {
-    if (await timingSafeEqual(candidate, code)) return true;
+    if (await timingSafeEqual(normalized, code)) return true;
+    // Also accept hyphen-less equality (extra safety).
+    if (await timingSafeEqual(normalized.replace(/-/g, ""), code.replace(/-/g, ""))) {
+      return true;
+    }
   }
   return false;
 }

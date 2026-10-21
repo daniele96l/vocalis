@@ -39,7 +39,8 @@ public struct VocalisConfig: Equatable, Sendable {
         Self.normalizeLicenseCode(licenseCode)
     }
 
-    /// Strip paste junk (quotes, Bearer, zero-width) and uppercase VOC-….
+    /// Strip paste junk and canonicalize to `VOC-XXXX-XXXX-XXXX`.
+    /// Handles en-dashes / smart punctuation from Messages, Mail, Notes, etc.
     public static func normalizeLicenseCode(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.count >= 7, s.prefix(7).lowercased() == "bearer " {
@@ -48,9 +49,23 @@ public struct VocalisConfig: Equatable, Sendable {
         if (s.hasPrefix("\"") && s.hasSuffix("\"")) || (s.hasPrefix("'") && s.hasSuffix("'")) {
             s = String(s.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        // Unicode dashes → ASCII hyphen
+        let dashSet = CharacterSet(charactersIn: "\u{2010}\u{2011}\u{2012}\u{2013}\u{2014}\u{2015}\u{2212}\u{FE58}\u{FE63}\u{FF0D}")
+        s = String(s.unicodeScalars.map { dashSet.contains($0) ? "-" : Character($0) })
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
-        s = String(s.unicodeScalars.filter { allowed.contains($0) })
-        return s.uppercased()
+        s = String(s.unicodeScalars.filter { allowed.contains($0) }).uppercased()
+
+        let compact = s.replacingOccurrences(of: "-", with: "")
+        if compact.count == 15, compact.hasPrefix("VOC") {
+            let hex = String(compact.dropFirst(3))
+            if hex.count == 12, hex.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "0123456789ABCDEF").contains($0) }) {
+                let a = hex.prefix(4)
+                let b = hex.dropFirst(4).prefix(4)
+                let c = hex.dropFirst(8).prefix(4)
+                return "VOC-\(a)-\(b)-\(c)"
+            }
+        }
+        return s
     }
 
     public var hasLicense: Bool { !resolvedLicenseCode.isEmpty }
