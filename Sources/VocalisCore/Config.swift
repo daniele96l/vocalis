@@ -10,7 +10,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public var inputDeviceID: String
 
     public static let defaultBaseURL = "https://api.openai.com/v1"
-    public static let defaultSTTModel = "whisper-1"
+    /// Cheapest widely available file STT; override in Settings anytime.
+    public static let defaultSTTModel = "gpt-4o-mini-transcribe"
     public static let defaultCleanupModel = "gpt-4o-mini"
     public static let defaultHotkey = "rightOption"
 

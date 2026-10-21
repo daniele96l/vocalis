@@ -68,13 +68,17 @@ public final class OpenAIClient: Sendable {
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(config.sttModel)\r\n")
 
+        // whisper-1 supports verbose_json (includes duration). Newer STT models use json.
+        let responseFormat = config.sttModel.lowercased() == "whisper-1" ? "verbose_json" : "json"
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
-        append("verbose_json\r\n")
+        append("\(responseFormat)\r\n")
 
+        let filename = audioURL.pathExtension.isEmpty ? "audio.wav" : "audio.\(audioURL.pathExtension)"
+        let mime = audioURL.pathExtension.lowercased() == "wav" ? "audio/wav" : "audio/m4a"
         append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n")
-        append("Content-Type: audio/m4a\r\n\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(mime)\r\n\r\n")
         body.append(try Data(contentsOf: audioURL))
         append("\r\n")
         append("--\(boundary)--\r\n")
@@ -106,6 +110,14 @@ public final class OpenAIClient: Sendable {
     }
 
     public func cleanup(text: String) async throws -> CleanupResult {
+        guard ModelCatalog.isCleanupEnabled(config.cleanupModel) else {
+            return CleanupResult(
+                text: text,
+                model: ModelCatalog.cleanupOff,
+                promptTokens: 0,
+                completionTokens: 0
+            )
+        }
         let key = config.resolvedAPIKey
         guard !key.isEmpty else { throw OpenAIClientError.missingKey }
 

@@ -364,6 +364,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         app.appState.statusMessage = "Could not save microphone."
                     }
                 }
+            },
+            onModelsChanged: { [weak self] in
+                guard let app = self else { return }
+                Task { @MainActor in
+                    app.controller?.reloadConfig()
+                    app.syncAppState()
+                }
             }
         )
 
@@ -472,6 +479,7 @@ struct RootView: View {
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
     var onInputDeviceChanged: (String) -> Void
+    var onModelsChanged: () -> Void
 
     var body: some View {
         ZStack {
@@ -498,6 +506,7 @@ struct RootView: View {
                             onHotkeyChanged: onHotkeyChanged,
                             onSavedKey: onSavedKey,
                             onInputDeviceChanged: onInputDeviceChanged,
+                            onModelsChanged: onModelsChanged,
                             onGoSetup: { nav.tab = .setup },
                             onGoHome: { nav.tab = .home }
                         )
@@ -687,6 +696,7 @@ struct SettingsView: View {
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
     var onInputDeviceChanged: (String) -> Void
+    var onModelsChanged: () -> Void
     var onGoSetup: () -> Void
     var onGoHome: () -> Void
 
@@ -697,15 +707,32 @@ struct SettingsView: View {
     @State private var localMonitor: Any?
     @State private var micDevices: [MicDevice] = MicDevices.listInputs()
     @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
+    @State private var selectedSTT: String = VocalisConfig.load().sttModel
+    @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
 
     private var keyConfigured: Bool { config.hasAPIKey }
+
+    private var exampleHoldCost: String {
+        let stt = OpenAIPricing.estimateSTT(model: selectedSTT, durationSeconds: 10)
+        let cleanup: Double
+        if ModelCatalog.isCleanupEnabled(selectedCleanup) {
+            cleanup = OpenAIPricing.estimateCleanup(
+                model: selectedCleanup,
+                promptTokens: 80,
+                completionTokens: 40
+            )
+        } else {
+            cleanup = 0
+        }
+        return String(format: "$%.4f", stt + cleanup)
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 pageHeader(
                     title: "Settings",
-                    subtitle: "API key, hotkey, microphone, and usage for this Mac."
+                    subtitle: "API key, models, hotkey, microphone, and usage for this Mac."
                 )
 
                 sectionLabel("Hotkey")
@@ -765,6 +792,62 @@ struct SettingsView: View {
                     }
                 }
 
+                sectionLabel("Cost & models")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Listening while you hold the hotkey is free — audio stays on this Mac. You pay only when you release: speech-to-text, then optional cleanup.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Text("Transcription is the expensive part (per minute of audio). Cleanup is a tiny chat call — usually fractions of a cent. Turn cleanup Off to save that second call.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Text("Example ~10s hold with these models: \(exampleHoldCost)")
+                            .font(.system(size: 13, weight: .medium))
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Speech-to-text")
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("STT", selection: $selectedSTT) {
+                                ForEach(ModelCatalog.sttChoices) { choice in
+                                    Text("\(choice.title) — \(choice.detail)").tag(choice.rawValue)
+                                }
+                                if !ModelCatalog.sttChoices.contains(where: { $0.rawValue == selectedSTT }) {
+                                    Text("\(selectedSTT) (custom)").tag(selectedSTT)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .onChange(of: selectedSTT) { newValue in
+                                saveSTT(newValue)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Cleanup")
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Cleanup", selection: $selectedCleanup) {
+                                ForEach(ModelCatalog.cleanupChoices) { choice in
+                                    Text("\(choice.title) — \(choice.detail)").tag(choice.rawValue)
+                                }
+                                if !ModelCatalog.cleanupChoices.contains(where: { $0.rawValue == selectedCleanup }) {
+                                    Text("\(selectedCleanup) (custom)").tag(selectedCleanup)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .onChange(of: selectedCleanup) { newValue in
+                                saveCleanup(newValue)
+                            }
+                        }
+                    }
+                }
+
                 sectionLabel("API key")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 10) {
@@ -797,7 +880,7 @@ struct SettingsView: View {
                         usageRow("Today", cost: state.usageToday, detail: state.usageTodayDetail)
                         usageRow("This week", cost: state.usageWeek, detail: state.usageWeekDetail)
                         usageRow("All time", cost: state.usageTotal, detail: state.usageTotalDetail)
-                        Text("Estimated locally (whisper ≈ $0.006/min, gpt-4o-mini ≈ $0.15/$0.60 per 1M in/out). Not OpenAI billing.")
+                        Text("Local estimates from list prices (STT ≈ $0.003–$0.006/min; cleanup is token-priced). Not OpenAI billing.")
                             .font(VocalisTheme.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -830,6 +913,10 @@ struct SettingsView: View {
         .onAppear {
             config = VocalisConfig.load()
             selectedMicUID = config.inputDeviceID
+            selectedSTT = config.sttModel
+            selectedCleanup = ModelCatalog.isCleanupEnabled(config.cleanupModel)
+                ? config.cleanupModel
+                : ModelCatalog.cleanupOff
             micDevices = MicDevices.listInputs()
             state.refresh(
                 permissions: nil,
@@ -839,6 +926,34 @@ struct SettingsView: View {
             )
         }
         .onDisappear { stopRecording(cancelled: true) }
+    }
+
+    private func saveSTT(_ model: String) {
+        do {
+            var next = VocalisConfig.load()
+            next.sttModel = model
+            try next.save()
+            config = next
+            onModelsChanged()
+            state.statusMessage = "Transcription model updated."
+        } catch {
+            state.statusMessage = "Could not save model."
+        }
+    }
+
+    private func saveCleanup(_ model: String) {
+        do {
+            var next = VocalisConfig.load()
+            next.cleanupModel = model
+            try next.save()
+            config = next
+            onModelsChanged()
+            state.statusMessage = model == ModelCatalog.cleanupOff
+                ? "Cleanup off — raw transcript only."
+                : "Cleanup model updated."
+        } catch {
+            state.statusMessage = "Could not save model."
+        }
     }
 
     private func sectionLabel(_ title: String) -> some View {

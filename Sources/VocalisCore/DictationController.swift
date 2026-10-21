@@ -50,6 +50,18 @@ public final class DictationController {
         _ = MicDevices.setDefaultInput(uid: uid)
     }
 
+    public func setSTTModel(_ model: String) throws {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.sttModel = trimmed.isEmpty ? VocalisConfig.defaultSTTModel : trimmed
+        try config.save()
+    }
+
+    public func setCleanupModel(_ model: String) throws {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.cleanupModel = trimmed.isEmpty ? ModelCatalog.cleanupOff : trimmed
+        try config.save()
+    }
+
     private func applyBinding(_ binding: HotkeyBinding) {
         hotkey.updateBinding(binding)
     }
@@ -110,8 +122,13 @@ public final class DictationController {
 
                 let client = OpenAIClient(config: config)
                 let transcript = try await client.transcribe(audioURL: audioURL)
-                let cleaned = try await client.cleanup(text: transcript.text)
-                try Paster.paste(cleaned.text)
+                let text: String
+                if ModelCatalog.isCleanupEnabled(config.cleanupModel) {
+                    text = try await client.cleanup(text: transcript.text).text
+                } else {
+                    text = transcript.text
+                }
+                try Paster.paste(text)
                 try? await Task.sleep(nanoseconds: 180_000_000)
                 bubble.hide()
             } catch {
