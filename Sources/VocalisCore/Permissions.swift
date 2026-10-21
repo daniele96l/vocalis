@@ -8,8 +8,7 @@ import IOKit.hid
 public struct PermissionSnapshot: Equatable, Sendable {
     public var microphone: Bool
     public var accessibility: Bool
-    /// True only after a functional HID tap has received a key (not IOHID/CGPreflight alone —
-    /// those can false-positive when Vocalis is absent from System Settings).
+    /// Input Monitoring allowed for this app (TCC granted, or previously verified and not revoked).
     public var inputMonitoring: Bool
     public var eventTapInstalled: Bool
 
@@ -141,12 +140,11 @@ public enum PermissionProbe {
         return true
     }
 
-    public static func snapshot(eventTapInstalled: Bool, inputMonitoringFunctional: Bool) -> PermissionSnapshot {
+    public static func snapshot(eventTapInstalled: Bool, inputMonitoringOK: Bool) -> PermissionSnapshot {
         PermissionSnapshot(
             microphone: microphoneGranted(),
             accessibility: accessibilityGranted(),
-            // Functional proof only — never trust IOHID/CGPreflight alone.
-            inputMonitoring: inputMonitoringFunctional,
+            inputMonitoring: inputMonitoringOK,
             eventTapInstalled: eventTapInstalled
         )
     }
@@ -169,12 +167,19 @@ public final class PermissionsModel: ObservableObject {
     private var hidBackendProvider: () -> Bool = { false }
     private var hotkeyRetry: (() -> Void)?
     private var didRequestListenOnLaunch = false
+    /// Sticky green for Input Monitoring across refreshes / Settings visits until TCC is Denied.
+    private let latchKey = "vocalis.inputMonitoring.latched"
+
+    private var latchedInputMonitoringOK: Bool {
+        get { UserDefaults.standard.bool(forKey: latchKey) }
+        set { UserDefaults.standard.set(newValue, forKey: latchKey) }
+    }
 
     public init(eventTapInstalledProvider: @escaping () -> Bool = { false }) {
         self.eventTapInstalledProvider = eventTapInstalledProvider
         self.snapshot = PermissionProbe.snapshot(
             eventTapInstalled: false,
-            inputMonitoringFunctional: false
+            inputMonitoringOK: false
         )
         refresh()
     }
@@ -217,12 +222,33 @@ public final class PermissionsModel: ObservableObject {
         let packaged = AppInstallProbe.isPackagedApp
         let installed = eventTapInstalledProvider()
         let hidBackend = hidBackendProvider()
-        // IM "Granted" only with HID tap + key proof — session taps work via Accessibility
-        // and must not look like Input Monitoring is granted.
-        let inputOK = hidBackend && installed && didReceiveKeyViaTap
+        let tcc = PermissionProbe.listenEventTCCState()
+        let preflight = CGPreflightListenEventAccess()
+
+        // TCC Denied → clear sticky green. Otherwise latch once proven / system-granted
+        // so Setup doesn't flip red after every Refresh or Settings visit.
+        if tcc == .denied {
+            latchedInputMonitoringOK = false
+            didReceiveKeyViaTap = false
+        } else if tcc == .granted || preflight || (hidBackend && installed && didReceiveKeyViaTap) {
+            latchedInputMonitoringOK = true
+        }
+
+        let inputOK = tcc != .denied && (
+            latchedInputMonitoringOK
+                || tcc == .granted
+                || preflight
+                || (hidBackend && installed && didReceiveKeyViaTap)
+        )
+
+        // Quietly re-install HID tap when macOS already granted IM but backend drifted.
+        if inputOK, (!installed || !hidBackend) {
+            hotkeyRetry?()
+        }
+
         let next = PermissionProbe.snapshot(
-            eventTapInstalled: installed,
-            inputMonitoringFunctional: inputOK
+            eventTapInstalled: installed || (inputOK && hidBackendProvider()),
+            inputMonitoringOK: inputOK
         )
 
         let dupWarning: String
@@ -234,40 +260,40 @@ public final class PermissionsModel: ObservableObject {
                 "Multiple Vocalis copies found. Using \(path). Grant Mic / Accessibility / Input Monitoring for this copy (also present: \(list)). Quit the other instance if it is running."
         }
 
-        let tcc = PermissionProbe.listenEventTCCState()
         let imHelp: String
         let statusMsg: String
         if next.inputMonitoring {
             imHelp = ""
-            statusMsg = ""
+            // Soft tip only while the live tap is still coming up — don't turn the row red.
+            if !installed || !hidBackend {
+                statusMsg = "Input Monitoring is On — reconnecting hotkey tap…"
+            } else {
+                statusMsg = ""
+            }
         } else {
             switch tcc {
             case .denied:
-                // Listed in System Settings but toggle Off — don't tell the user to + add.
                 imHelp =
-                    "Vocalis is already in Input Monitoring — turn its toggle On, then return here, press any key, and Refresh."
+                    "Vocalis is already in Input Monitoring — turn its toggle On, then return here and Refresh."
             case .granted:
                 imHelp =
-                    "macOS shows access, but Vocalis still needs a key press through the hotkey tap. Press any key once, then Refresh."
+                    "macOS shows access On. Tap Refresh (or press a key) so Vocalis can attach the hotkey."
             case .unknown:
                 imHelp =
-                    "Open Input Monitoring. If Vocalis is listed, turn the toggle On. If it’s missing, click + and choose \(addPath), then toggle On. Return, press a key, Refresh."
+                    "Open Input Monitoring. If Vocalis is listed, turn the toggle On. If it’s missing, click + and choose \(addPath), then toggle On and Refresh."
             }
             if !packaged {
                 statusMsg =
                     "Running unpackaged binary — Input Monitoring may not list it. Install Vocalis.app and relaunch."
-            } else if !installed {
-                statusMsg =
-                    "Hotkey tap not installed — turn on Accessibility, then Input Monitoring (toggle On), then Refresh."
             } else if tcc == .denied {
                 statusMsg =
-                    "Synced: Vocalis is listed under Input Monitoring but the toggle is Off — flip it On."
-            } else if !hidBackend {
+                    "Input Monitoring toggle is Off for Vocalis — flip it On in System Settings."
+            } else if !installed {
                 statusMsg =
-                    "Hotkey can work with Accessibility On. For Input Monitoring: open Settings, turn Vocalis On (or + add if missing), press a key."
+                    "Hotkey tap not installed — turn on Accessibility + Input Monitoring, then Refresh."
             } else {
                 statusMsg =
-                    "Waiting for a key after Input Monitoring is On — press any key, then Refresh."
+                    "Finish Input Monitoring setup, then Refresh."
             }
         }
 
@@ -333,9 +359,12 @@ public final class PermissionsModel: ObservableObject {
             }
         }
         openPrivacyPane(legacyQuery: "Privacy_ListenEvent", modernPath: "Privacy_ListenEvent")
-        // Reset functional proof so user must re-verify after changing Settings.
-        didReceiveKeyViaTap = false
+        // Do not clear the sticky latch here — that made Setup flip green→red after every click.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.hotkeyRetry?()
+            self?.refresh()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.hotkeyRetry?()
             self?.refresh()
         }
