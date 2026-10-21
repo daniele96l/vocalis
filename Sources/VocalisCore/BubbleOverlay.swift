@@ -121,7 +121,7 @@ struct BubbleView: View {
             HStack(spacing: 10) {
                 LevelMeter(level: model.level)
                     .frame(width: 72, height: 18)
-                Text(model.level < 0.04 ? "Listening (quiet)" : "Listening")
+                Text(model.level < 0.02 ? "Listening (quiet)" : "Listening")
                     .font(.system(size: 13, weight: .medium))
                 Spacer(minLength: 0)
             }

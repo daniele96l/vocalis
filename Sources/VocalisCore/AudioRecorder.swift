@@ -61,15 +61,19 @@ public final class AudioRecorder: NSObject {
         let engine = AVAudioEngine()
         let input = engine.inputNode
 
-        if let device {
-            try bindInputDevice(device.coreAudioID, on: input)
-            // Binding can briefly zero the format while CoreAudio renegotiates HFP.
-            if isBluetoothSession {
-                try? await Task.sleep(nanoseconds: 250_000_000)
+        // Never bind Bluetooth via CurrentDevice — that yields a running engine with
+        // zero input buffers on AirPods. Route via system default only (activateInput).
+        // Only bind explicit non-BT picks (USB etc.) when not already the default.
+        if let device, !device.isBluetooth, !preferredDeviceUID.isEmpty {
+            let currentDefault = MicDevices.defaultInput()?.coreAudioID
+            if currentDefault != device.coreAudioID {
+                try bindInputDevice(device.coreAudioID, on: input)
             }
         }
 
-        // Re-query after binding — format can change with Bluetooth.
+        engine.prepare()
+
+        // Re-query — Bluetooth format settles after default-route activation.
         var hwFormat = input.inputFormat(forBus: 0)
         if (hwFormat.sampleRate <= 0 || hwFormat.channelCount == 0), isBluetoothSession {
             for _ in 0..<6 {
@@ -110,11 +114,18 @@ public final class AudioRecorder: NSObject {
             || writeFormat.commonFormat != hwFormat.commonFormat
         let converter = needsDownmix ? AVAudioConverter(from: hwFormat, to: writeFormat) : nil
 
+        let bluetoothGain: Float = isBluetoothSession ? 6.0 : 1.0
+
         input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, _ in
-            self?.handleBuffer(buffer, converter: converter, file: file, fileFormat: writeFormat)
+            self?.handleBuffer(
+                buffer,
+                converter: converter,
+                file: file,
+                fileFormat: writeFormat,
+                writeGain: bluetoothGain
+            )
         }
 
-        engine.prepare()
         do {
             try engine.start()
         } catch {
@@ -199,13 +210,15 @@ public final class AudioRecorder: NSObject {
         _ buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter?,
         file: AVAudioFile,
-        fileFormat: AVAudioFormat
+        fileFormat: AVAudioFormat,
+        writeGain: Float
     ) {
-        let level = Self.rmsLevel(buffer)
+        let level = Self.displayLevel(buffer)
         Task { @MainActor in
             self.latestLevel = level
         }
 
+        let toWrite: AVAudioPCMBuffer
         if let converter {
             let capacity = AVAudioFrameCount(buffer.frameLength) + 32
             guard let out = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: capacity) else { return }
@@ -221,32 +234,72 @@ public final class AudioRecorder: NSObject {
                 return buffer
             }
             converter.convert(to: out, error: &error, withInputFrom: inputBlock)
-            if error == nil, out.frameLength > 0 {
-                try? file.write(from: out)
-            }
+            guard error == nil, out.frameLength > 0 else { return }
+            toWrite = out
         } else {
-            try? file.write(from: buffer)
+            toWrite = buffer
+        }
+
+        if writeGain != 1, let gained = Self.gainedCopy(toWrite, gain: writeGain) {
+            try? file.write(from: gained)
+        } else {
+            try? file.write(from: toWrite)
         }
     }
 
-    nonisolated private static func rmsLevel(_ buffer: AVAudioPCMBuffer) -> Float {
+    /// AirPods HFP peaks ~0.02 — scale so the meter actually moves.
+    nonisolated private static func displayLevel(_ buffer: AVAudioPCMBuffer) -> Float {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return 0 }
         if let channels = buffer.floatChannelData {
             let samples = UnsafeBufferPointer(start: channels[0], count: frames)
             var sum: Float = 0
-            for s in samples { sum += s * s }
-            return min(1, max(0, sqrt(sum / Float(frames)) * 4.5))
+            var peak: Float = 0
+            for s in samples {
+                sum += s * s
+                peak = max(peak, abs(s))
+            }
+            let rms = sqrt(sum / Float(frames))
+            return min(1, max(rms * 18, peak * 12))
         }
         if let channels = buffer.int16ChannelData {
             let samples = UnsafeBufferPointer(start: channels[0], count: frames)
             var sum: Float = 0
+            var peak: Float = 0
             for s in samples {
                 let f = Float(s) / Float(Int16.max)
                 sum += f * f
+                peak = max(peak, abs(f))
             }
-            return min(1, max(0, sqrt(sum / Float(frames)) * 4.5))
+            let rms = sqrt(sum / Float(frames))
+            return min(1, max(rms * 18, peak * 12))
         }
         return 0
+    }
+
+    nonisolated private static func gainedCopy(_ buffer: AVAudioPCMBuffer, gain: Float) -> AVAudioPCMBuffer? {
+        guard let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
+            return nil
+        }
+        out.frameLength = buffer.frameLength
+        let frames = Int(buffer.frameLength)
+        if let src = buffer.floatChannelData, let dst = out.floatChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                for i in 0..<frames {
+                    dst[ch][i] = max(-1, min(1, src[ch][i] * gain))
+                }
+            }
+            return out
+        }
+        if let src = buffer.int16ChannelData, let dst = out.int16ChannelData {
+            for ch in 0..<Int(buffer.format.channelCount) {
+                for i in 0..<frames {
+                    let v = Int(Float(src[ch][i]) * gain)
+                    dst[ch][i] = Int16(clamping: v)
+                }
+            }
+            return out
+        }
+        return nil
     }
 }
