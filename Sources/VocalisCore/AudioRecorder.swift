@@ -194,12 +194,10 @@ public final class AudioRecorder: NSObject {
             throw AudioRecorderError.setupFailed("Mic format unavailable — try Built-in mic")
         }
 
-        let writeFormat = try monoWriteFormat(from: hwFormat)
+        // Always write mono int16 WAV — Grok rejects empty/float captures; OpenAI accepts int16.
+        let writeFormat = try Self.int16MonoFormat(sampleRate: hwFormat.sampleRate)
         let target = try ChunkWriteTarget(format: writeFormat)
-
-        let needsDownmix = writeFormat.channelCount != hwFormat.channelCount
-            || writeFormat.commonFormat != hwFormat.commonFormat
-        let converter = needsDownmix ? AVAudioConverter(from: hwFormat, to: writeFormat) : nil
+        let converter = AVAudioConverter(from: hwFormat, to: writeFormat)
         let gain = writeGain
 
         input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, _ in
@@ -243,7 +241,8 @@ public final class AudioRecorder: NSObject {
             mReserved: 0
         )
 
-        guard let writeFormat = AVAudioFormat(
+        // Capture as float from the device, convert to int16 on write (Grok-compatible WAV).
+        guard let captureFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
             channels: 1,
@@ -251,9 +250,18 @@ public final class AudioRecorder: NSObject {
         ) else {
             throw AudioRecorderError.setupFailed("Mic format failed")
         }
+        let writeFormat = try Self.int16MonoFormat(sampleRate: sampleRate)
         let target = try ChunkWriteTarget(format: writeFormat)
+        let converter = AVAudioConverter(from: captureFormat, to: writeFormat)
 
-        let context = QueueContext(owner: self, target: target, writeGain: writeGain)
+        let context = QueueContext(
+            owner: self,
+            target: target,
+            writeGain: writeGain,
+            captureFormat: captureFormat,
+            writeFormat: writeFormat,
+            converter: converter
+        )
         var queue: AudioQueueRef?
         let status = AudioQueueNewInput(
             &asbd,
@@ -368,17 +376,17 @@ public final class AudioRecorder: NSObject {
         }
     }
 
-    private func monoWriteFormat(from hwFormat: AVAudioFormat) throws -> AVAudioFormat {
-        if hwFormat.channelCount == 1 { return hwFormat }
-        if let mono = AVAudioFormat(
-            commonFormat: hwFormat.commonFormat,
-            sampleRate: hwFormat.sampleRate,
+    private static func int16MonoFormat(sampleRate: Double) throws -> AVAudioFormat {
+        let rate = sampleRate > 0 ? sampleRate : 24_000
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: rate,
             channels: 1,
-            interleaved: hwFormat.isInterleaved
-        ) {
-            return mono
+            interleaved: true
+        ) else {
+            throw AudioRecorderError.setupFailed("Mic format failed")
         }
-        throw AudioRecorderError.setupFailed("Mic format failed")
+        return format
     }
 
     nonisolated private func handleEngineBuffer(
@@ -394,40 +402,44 @@ public final class AudioRecorder: NSObject {
             self.bufferCount += 1
         }
 
-        let toWrite: AVAudioPCMBuffer
-        if let converter {
-            let capacity = AVAudioFrameCount(buffer.frameLength) + 32
-            guard let out = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: capacity) else { return }
-            var consumed = false
-            var error: NSError?
-            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                if consumed {
-                    outStatus.pointee = .noDataNow
-                    return nil
+        guard let converter else { return }
+        let capacity = AVAudioFrameCount(buffer.frameLength) + 32
+        guard let out = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: capacity) else { return }
+
+        // Apply gain in the float domain before converting to int16.
+        if writeGain != 1, let floats = buffer.floatChannelData {
+            let frames = Int(buffer.frameLength)
+            for ch in 0..<Int(buffer.format.channelCount) {
+                for i in 0..<frames {
+                    floats[ch][i] = max(-1, min(1, floats[ch][i] * writeGain))
                 }
-                consumed = true
-                outStatus.pointee = .haveData
-                return buffer
             }
-            converter.convert(to: out, error: &error, withInputFrom: inputBlock)
-            guard error == nil, out.frameLength > 0 else { return }
-            toWrite = out
-        } else {
-            toWrite = buffer
         }
 
-        if writeGain != 1, let gained = Self.gainedCopy(toWrite, gain: writeGain) {
-            target.write(gained)
-        } else {
-            target.write(toWrite)
+        var consumed = false
+        var error: NSError?
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            outStatus.pointee = .haveData
+            return buffer
         }
+        converter.convert(to: out, error: &error, withInputFrom: inputBlock)
+        guard error == nil, out.frameLength > 0 else { return }
+        target.write(out)
     }
 
     fileprivate nonisolated func handleQueueBuffer(
         _ audioData: UnsafeMutableRawPointer,
         byteSize: UInt32,
         target: ChunkWriteTarget,
-        writeGain: Float
+        writeGain: Float,
+        captureFormat: AVAudioFormat,
+        writeFormat: AVAudioFormat,
+        converter: AVAudioConverter?
     ) {
         let frames = Int(byteSize) / MemoryLayout<Float>.size
         guard frames > 0 else { return }
@@ -448,21 +460,38 @@ public final class AudioRecorder: NSObject {
             self.bufferCount += 1
         }
 
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: target.sampleRate,
-            channels: 1,
-            interleaved: true
-        ), let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else {
-            return
-        }
-        buf.frameLength = AVAudioFrameCount(frames)
-        if let dst = buf.floatChannelData?[0] {
+        guard let floatBuf = AVAudioPCMBuffer(
+            pcmFormat: captureFormat,
+            frameCapacity: AVAudioFrameCount(frames)
+        ) else { return }
+        floatBuf.frameLength = AVAudioFrameCount(frames)
+        if let dst = floatBuf.floatChannelData?[0] {
             for i in 0..<frames {
                 dst[i] = max(-1, min(1, samples[i] * writeGain))
             }
         }
-        target.write(buf)
+
+        guard let converter,
+              let out = AVAudioPCMBuffer(
+                pcmFormat: writeFormat,
+                frameCapacity: AVAudioFrameCount(frames) + 32
+              ) else {
+            return
+        }
+        var consumed = false
+        var error: NSError?
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            outStatus.pointee = .haveData
+            return floatBuf
+        }
+        converter.convert(to: out, error: &error, withInputFrom: inputBlock)
+        guard error == nil, out.frameLength > 0 else { return }
+        target.write(out)
     }
 
     nonisolated private static func displayLevel(fromFloatBuffer buffer: AVAudioPCMBuffer) -> Float {
@@ -481,23 +510,6 @@ public final class AudioRecorder: NSObject {
         }
         return 0
     }
-
-    nonisolated private static func gainedCopy(_ buffer: AVAudioPCMBuffer, gain: Float) -> AVAudioPCMBuffer? {
-        guard let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
-            return nil
-        }
-        out.frameLength = buffer.frameLength
-        let frames = Int(buffer.frameLength)
-        if let src = buffer.floatChannelData, let dst = out.floatChannelData {
-            for ch in 0..<Int(buffer.format.channelCount) {
-                for i in 0..<frames {
-                    dst[ch][i] = max(-1, min(1, src[ch][i] * gain))
-                }
-            }
-            return out
-        }
-        return nil
-    }
 }
 
 // MARK: - AudioQueue callback context
@@ -510,11 +522,24 @@ private final class QueueContext: @unchecked Sendable {
     weak var owner: AudioRecorder?
     let target: ChunkWriteTarget
     let writeGain: Float
+    let captureFormat: AVAudioFormat
+    let writeFormat: AVAudioFormat
+    let converter: AVAudioConverter?
 
-    init(owner: AudioRecorder, target: ChunkWriteTarget, writeGain: Float) {
+    init(
+        owner: AudioRecorder,
+        target: ChunkWriteTarget,
+        writeGain: Float,
+        captureFormat: AVAudioFormat,
+        writeFormat: AVAudioFormat,
+        converter: AVAudioConverter?
+    ) {
         self.owner = owner
         self.target = target
         self.writeGain = writeGain
+        self.captureFormat = captureFormat
+        self.writeFormat = writeFormat
+        self.converter = converter
     }
 
     func handle(buffer: AudioQueueBufferRef, queue: AudioQueueRef) {
@@ -524,7 +549,10 @@ private final class QueueContext: @unchecked Sendable {
                 buffer.pointee.mAudioData,
                 byteSize: byteSize,
                 target: target,
-                writeGain: writeGain
+                writeGain: writeGain,
+                captureFormat: captureFormat,
+                writeFormat: writeFormat,
+                converter: converter
             )
         }
         AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
