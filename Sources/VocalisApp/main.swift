@@ -198,6 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             permissions.setEventTapInstalledProvider { [weak controller] in
                 controller?.isHotkeyTapInstalled ?? false
             }
+            permissions.setHIDBackendProvider { [weak controller] in
+                (controller?.hotkey.activeBackend ?? "").hasPrefix("hid")
+            }
             permissions.setHotkeyRetry { [weak controller] in
                 controller?.retryHotkeyTap()
             }
@@ -215,17 +218,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.start()
             syncAppState()
 
-            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            // Fixed-width slot so a template icon is always visible in the menu bar.
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.isVisible = true
             if let button = item.button {
-                if let icon = Self.menubarIcon() {
-                    button.image = icon
-                } else {
-                    button.image = NSImage(
-                        systemSymbolName: "waveform.circle.fill",
-                        accessibilityDescription: "Vocalis"
-                    )
-                    button.image?.isTemplate = true
-                }
+                button.image = Self.menubarIcon()
+                button.image?.isTemplate = true
+                button.toolTip = "Vocalis — hold hotkey to dictate"
+                button.appearsDisabled = false
             }
             statusItem = item
             rebuildMenu()
@@ -253,12 +253,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         Task { @MainActor in
-            if !(controller?.isHotkeyTapInstalled ?? false) {
-                controller?.retryHotkeyTap()
-            }
+            // Always re-assert the tap when coming back — taps can die while backgrounded.
+            controller?.retryHotkeyTap()
             permissions.refresh()
             syncAppState()
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openMain(tab: .home) }
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Menubar agent — closing the window must keep Vocalis (and the hotkey) alive.
+        false
     }
 
     @MainActor
@@ -273,30 +282,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    private static func menubarIcon() -> NSImage? {
-        let candidates: [URL?] = [
-            Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-            Bundle.main.resourceURL?.appendingPathComponent("AppIcon.icns"),
-            Bundle.main.bundleURL
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources/AppIcon.icns"),
-        ]
-        for case let url? in candidates {
-            if let img = NSImage(contentsOf: url) {
-                let sized = NSImage(size: NSSize(width: 18, height: 18))
-                sized.lockFocus()
-                img.draw(
-                    in: NSRect(x: 0, y: 0, width: 18, height: 18),
-                    from: .zero,
-                    operation: .sourceOver,
-                    fraction: 1
-                )
-                sized.unlockFocus()
-                sized.isTemplate = false
-                return sized
-            }
+    /// Always a template SF Symbol — colorful AppIcon.icns is invisible on dark menu bars.
+    private static func menubarIcon() -> NSImage {
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+        if let image = NSImage(
+            systemSymbolName: "waveform.circle.fill",
+            accessibilityDescription: "Vocalis"
+        )?.withSymbolConfiguration(config) {
+            image.isTemplate = true
+            return image
         }
-        return nil
+        // Last resort: text status item
+        let fallback = NSImage(size: NSSize(width: 18, height: 18))
+        fallback.isTemplate = true
+        return fallback
     }
 
     private func rebuildMenu() {

@@ -6,16 +6,21 @@ public final class HotkeyMonitor {
     public var onPushBegan: (() -> Void)?
     public var onPushEnded: (() -> Void)?
     public var onTapStateChanged: ((Bool) -> Void)?
-    /// Fires on any key/flags event received through the HID tap (for IM verification).
+    /// Fires on any key/flags event received through the live monitor (for IM verification).
     public var onAnyKeyEvent: (() -> Void)?
 
     public private(set) var isTapInstalled = false
     public private(set) var lastStartError: String?
+    /// Which backend is delivering events.
+    public private(set) var activeBackend: String = "none"
 
     private var binding: HotkeyBinding
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isHolding = false
+    private var localMonitor: Any?
+    private var globalMonitor: Any?
+    private var watchdog: Timer?
 
     public init(binding: HotkeyBinding = .rightOption) {
         self.binding = binding
@@ -47,48 +52,94 @@ public final class HotkeyMonitor {
             return monitor.handle(type: type, event: event)
         }
 
-        // HID tap requires Input Monitoring (session taps can succeed with Accessibility alone).
-        var tap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: CGEventMask(mask),
-            callback: callback,
-            userInfo: refcon
-        )
+        // Prefer session tap: works system-wide when Accessibility is On, including
+        // when Vocalis is backgrounded / has no window. HID tapCreate often returns
+        // non-nil without Input Monitoring but then delivers no background events —
+        // so it must not win the race over session.
+        let locations: [(CGEventTapLocation, String)] = [
+            (.cgSessionEventTap, "session"),
+            (.cghidEventTap, "hid"),
+        ]
 
-        if tap == nil {
-            // Ask TCC to register this .app under Input Monitoring, then retry once.
+        var installed: CFMachPort?
+        var backend = "none"
+        for (location, name) in locations {
+            if let tap = CGEvent.tapCreate(
+                tap: location,
+                place: .headInsertEventTap,
+                options: .listenOnly,
+                eventsOfInterest: CGEventMask(mask),
+                callback: callback,
+                userInfo: refcon
+            ) {
+                installed = tap
+                backend = name
+                break
+            }
+        }
+
+        if installed == nil {
             _ = PermissionProbe.requestInputMonitoring()
-            tap = CGEvent.tapCreate(
+            // Retry HID once after requesting IM.
+            if let tap = CGEvent.tapCreate(
                 tap: .cghidEventTap,
                 place: .headInsertEventTap,
                 options: .listenOnly,
                 eventsOfInterest: CGEventMask(mask),
                 callback: callback,
                 userInfo: refcon
-            )
+            ) {
+                installed = tap
+                backend = "hid-retry"
+            } else if let tap = CGEvent.tapCreate(
+                tap: .cgSessionEventTap,
+                place: .headInsertEventTap,
+                options: .listenOnly,
+                eventsOfInterest: CGEventMask(mask),
+                callback: callback,
+                userInfo: refcon
+            ) {
+                installed = tap
+                backend = "session-retry"
+            }
         }
 
-        guard let tap else {
+        if let tap = installed {
+            eventTap = tap
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            runLoopSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            isTapInstalled = true
+            activeBackend = backend
+            lastStartError = nil
+            onTapStateChanged?(true)
+            NSLog("Vocalis: hotkey tap installed (\(backend))")
+        } else {
             isTapInstalled = false
-            lastStartError = "Event tap failed — enable Input Monitoring for Vocalis in System Settings."
+            activeBackend = "none"
+            lastStartError = "Event tap failed — enable Accessibility + Input Monitoring for Vocalis."
             NSLog("Vocalis: \(lastStartError!)")
             onTapStateChanged?(false)
-            return
         }
 
-        eventTap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        isTapInstalled = true
-        lastStartError = nil
-        onTapStateChanged?(true)
+        // Local monitor: reliable while Vocalis is the active app (window front).
+        // Global monitor: other apps focused — needs Input Monitoring on modern macOS.
+        installNSEventMonitors()
+        startWatchdog()
     }
 
     public func stop() {
+        watchdog?.invalidate()
+        watchdog = nil
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
+        }
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
+            self.globalMonitor = nil
+        }
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -98,10 +149,60 @@ public final class HotkeyMonitor {
         eventTap = nil
         runLoopSource = nil
         isHolding = false
+        activeBackend = "none"
         if isTapInstalled {
             isTapInstalled = false
             onTapStateChanged?(false)
         }
+    }
+
+    private func installNSEventMonitors() {
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+            self?.handleNSEvent(event)
+            return event
+        }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+            self?.handleNSEvent(event)
+        }
+    }
+
+    private func startWatchdog() {
+        // Event taps can be silently disabled (timeout / user input). Re-enable while running.
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.reenableTapIfNeeded()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    private func reenableTapIfNeeded() {
+        guard let tap = eventTap else { return }
+        if !CGEvent.tapIsEnabled(tap: tap) {
+            CGEvent.tapEnable(tap: tap, enable: true)
+            NSLog("Vocalis: re-enabled hotkey event tap")
+        }
+    }
+
+    private func handleNSEvent(_ event: NSEvent) {
+        let type: CGEventType
+        switch event.type {
+        case .keyDown: type = .keyDown
+        case .keyUp: type = .keyUp
+        case .flagsChanged: type = .flagsChanged
+        default: return
+        }
+        var flags: CGEventFlags = []
+        let nsFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if nsFlags.contains(.control) { flags.insert(.maskControl) }
+        if nsFlags.contains(.shift) { flags.insert(.maskShift) }
+        if nsFlags.contains(.option) { flags.insert(.maskAlternate) }
+        if nsFlags.contains(.command) { flags.insert(.maskCommand) }
+
+        onAnyKeyEvent?()
+        process(type: type, keyCode: Int64(event.keyCode), flags: flags)
     }
 
     nonisolated private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -133,11 +234,9 @@ public final class HotkeyMonitor {
                 } else if type == .keyDown {
                     down = true
                 } else {
-                    // flagsChanged — infer from matching modifier flag
                     down = Self.modifierFlag(forKeyCode: target).map { flags.contains($0) } ?? false
                 }
             } else if type == .flagsChanged {
-                // Another flag changed; if our modifier flag cleared, release.
                 if let flag = Self.modifierFlag(forKeyCode: target), !flags.contains(flag) {
                     down = false
                 } else {
@@ -155,8 +254,6 @@ public final class HotkeyMonitor {
                 && flags.contains(.maskAlternate) == needsOption
                 && flags.contains(.maskCommand) == needsCommand
 
-            // For chord matching, ignore device-dependent bits by checking required set ⊆ flags
-            // and no extra primary modifiers — already handled via equality above.
             if type == .flagsChanged {
                 if !modsOK { updateHold(false) }
                 return

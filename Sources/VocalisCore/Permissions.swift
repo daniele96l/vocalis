@@ -147,6 +147,8 @@ public final class PermissionsModel: ObservableObject {
     public private(set) var didReceiveKeyViaTap = false
 
     private var eventTapInstalledProvider: () -> Bool = { false }
+    /// Returns true only when the live hotkey backend is a HID tap (Input Monitoring).
+    private var hidBackendProvider: () -> Bool = { false }
     private var hotkeyRetry: (() -> Void)?
     private var didRequestListenOnLaunch = false
 
@@ -161,6 +163,11 @@ public final class PermissionsModel: ObservableObject {
 
     public func setEventTapInstalledProvider(_ provider: @escaping () -> Bool) {
         eventTapInstalledProvider = provider
+        refresh()
+    }
+
+    public func setHIDBackendProvider(_ provider: @escaping () -> Bool) {
+        hidBackendProvider = provider
         refresh()
     }
 
@@ -191,7 +198,10 @@ public final class PermissionsModel: ObservableObject {
         let addPath = AppInstallProbe.preferredManualAddPath
         let packaged = AppInstallProbe.isPackagedApp
         let installed = eventTapInstalledProvider()
-        let inputOK = installed && didReceiveKeyViaTap
+        let hidBackend = hidBackendProvider()
+        // IM "Granted" only with HID tap + key proof — session taps work via Accessibility
+        // and must not look like Input Monitoring is granted.
+        let inputOK = hidBackend && installed && didReceiveKeyViaTap
         let next = PermissionProbe.snapshot(
             eventTapInstalled: installed,
             inputMonitoringFunctional: inputOK
@@ -222,7 +232,10 @@ public final class PermissionsModel: ObservableObject {
                     "Running unpackaged binary — Input Monitoring may not list it. Install Vocalis.app and relaunch."
             } else if !installed {
                 statusMsg =
-                    "Hotkey tap not installed — enable Input Monitoring, then press any key."
+                    "Hotkey tap not installed — turn on Accessibility and Input Monitoring, then Refresh."
+            } else if !hidBackend {
+                statusMsg =
+                    "Hotkey can work in other apps once Accessibility is On. For full Input Monitoring: + add \(addPath), toggle On, press a key."
             } else {
                 statusMsg =
                     "Waiting for a key — if Vocalis is missing from Input Monitoring, use + to add \(addPath), toggle On, then press a key."
@@ -231,7 +244,7 @@ public final class PermissionsModel: ObservableObject {
 
         let axHelp: String = next.accessibility
             ? ""
-            : "Vocalis may already be listed under Accessibility — turn its toggle On, then Refresh."
+            : "Turn Vocalis On under Accessibility — required for the hotkey while other apps are focused."
 
         let micHelp: String
         if next.microphone {
