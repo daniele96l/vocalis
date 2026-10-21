@@ -11,11 +11,11 @@ public enum OpenAIClientError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .missingKey: return "Bad key"
+        case .missingKey: return "Bad key or license"
         case .emptyAudio: return "Empty audio"
         case .emptyTranscript: return "Empty audio"
         case .http(let code, _):
-            if code == 401 || code == 403 { return "Bad key" }
+            if code == 401 || code == 403 { return "Bad key or license" }
             return "API \(code)"
         case .decode: return "Bad response"
         }
@@ -49,6 +49,44 @@ public final class OpenAIClient: Sendable {
         return config.resolvedCleanupStyle.systemPrompt(preferredLanguages: langs)
     }
 
+    /// Bearer token: license code (proxy) or provider API key.
+    private func authToken(forProvider provider: AuthProvider) throws -> String {
+        if config.usesLicense {
+            let code = config.resolvedLicenseCode
+            guard !code.isEmpty else { throw OpenAIClientError.missingKey }
+            return code
+        }
+        switch provider {
+        case .openai:
+            let key = config.resolvedAPIKey
+            guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+            return key
+        case .xai:
+            let key = config.resolvedXAIKey
+            guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+            return key
+        }
+    }
+
+    private enum AuthProvider {
+        case openai
+        case xai
+    }
+
+    private var openAIBaseURL: String {
+        if config.usesLicense {
+            return "\(config.resolvedLicenseProxyURL)/v1"
+        }
+        return config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private var xaiSTTURL: URL {
+        if config.usesLicense {
+            return URL(string: "\(config.resolvedLicenseProxyURL)/v1/stt")!
+        }
+        return URL(string: "\(ModelCatalog.xaiSTTBaseURL)/stt")!
+    }
+
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
         if config.usesGrokSTT {
             return try await transcribeWithGrok(audioURL: audioURL)
@@ -57,8 +95,7 @@ public final class OpenAIClient: Sendable {
     }
 
     private func transcribeWithGrok(audioURL: URL) async throws -> TranscriptionResult {
-        let key = config.resolvedXAIKey
-        guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+        let key = try authToken(forProvider: .xai)
 
         let attrs = try FileManager.default.attributesOfItem(atPath: audioURL.path)
         let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
@@ -103,8 +140,7 @@ public final class OpenAIClient: Sendable {
         append("\r\n")
         append("--\(boundary)--\r\n")
 
-        let url = URL(string: "\(ModelCatalog.xaiSTTBaseURL)/stt")!
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: xaiSTTURL)
         request.httpMethod = "POST"
         request.timeoutInterval = 60
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -131,8 +167,7 @@ public final class OpenAIClient: Sendable {
     }
 
     private func transcribeWithOpenAI(audioURL: URL) async throws -> TranscriptionResult {
-        let key = config.resolvedAPIKey
-        guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+        let key = try authToken(forProvider: .openai)
 
         let attrs = try FileManager.default.attributesOfItem(atPath: audioURL.path)
         let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
@@ -178,7 +213,7 @@ public final class OpenAIClient: Sendable {
         append("\r\n")
         append("--\(boundary)--\r\n")
 
-        let url = URL(string: "\(config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/audio/transcriptions")!
+        let url = URL(string: "\(openAIBaseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 60
@@ -214,8 +249,7 @@ public final class OpenAIClient: Sendable {
                 completionTokens: 0
             )
         }
-        let key = config.resolvedAPIKey
-        guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+        let key = try authToken(forProvider: .openai)
 
         let style = config.resolvedCleanupStyle
         // Light mode can skip when the transcript already looks polished.
@@ -246,7 +280,7 @@ public final class OpenAIClient: Sendable {
                 ["role": "user", "content": text],
             ],
         ]
-        let url = URL(string: "\(config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/chat/completions")!
+        let url = URL(string: "\(openAIBaseURL)/chat/completions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 8

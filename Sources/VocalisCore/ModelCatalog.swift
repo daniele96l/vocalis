@@ -152,7 +152,7 @@ public enum CleanupStyle: String, CaseIterable, Identifiable, Equatable, Sendabl
     case light = "light"
     /// Also repair obvious STT mishearings from context.
     case fix = "fix"
-    /// Structure the message (lists, parentheses, clear paragraphs).
+    /// Polish like a careful text — light structure only when it truly helps.
     case shape = "shape"
 
     public var id: String { rawValue }
@@ -172,7 +172,7 @@ public enum CleanupStyle: String, CaseIterable, Identifiable, Equatable, Sendabl
         case .fix:
             return "Also replace nonsense / misheard words from context"
         case .shape:
-            return "Lists, brackets, structure — as if you typed carefully"
+            return "Polished like a text — lists/brackets only if needed"
         }
     }
 
@@ -203,11 +203,12 @@ public enum CleanupStyle: String, CaseIterable, Identifiable, Equatable, Sendabl
             """
         case .shape:
             return """
-            Turn this spoken transcript into a clear written message the speaker would have typed carefully. \
-            Fix typos, punctuation, casing, and obvious misheard words from context. \
-            Reorganize when helpful: use bullet lists for enumerations, parentheses for asides, \
-            short paragraphs or line breaks for separate thoughts, and light emphasis only when the speech implies it. \
-            Keep the speaker’s meaning; do not invent content. Prefer languages: \(langs). Do not translate. \
+            Polish this spoken transcript like a clear text message the speaker meant to send — natural and readable, not a formal document. \
+            Fix typos, punctuation, casing, and obvious misheard words from context. Smooth awkward speech into clean sentences. \
+            Do NOT invent a subject line, title, heading, chapter, table, or section labels. Do not force outline structure. \
+            Use a bullet list, parentheses, or a line break only when the content clearly needs it (e.g. several distinct items); \
+            otherwise keep a normal paragraph or two. Prefer flowing prose over formatting. \
+            Keep the speaker’s meaning; do not add content that was not said. Prefer languages: \(langs). Do not translate. \
             Output only the final message text.
             """
         }

@@ -1,0 +1,14 @@
+name = "vocalis-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-10-21"
+
+# Secrets (set via `wrangler secret put`):
+#   LICENSE_CODES   — comma-separated VOC-… codes
+#   OPENAI_API_KEY  — your OpenAI key (STT + cleanup)
+#   XAI_API_KEY     — your xAI key (Grok STT)
+
+[observability]
+enabled = true
+
+[observability.traces]
+enabled = true

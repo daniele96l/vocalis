@@ -21,3 +21,7 @@ last_dictation.txt
 dictations.log
 *.key
 secrets/
+licenses.json
+**/licenses.json
+workers/vocalis-proxy/node_modules/
+workers/vocalis-proxy/.wrangler/

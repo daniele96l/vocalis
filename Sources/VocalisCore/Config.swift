@@ -4,6 +4,10 @@ public struct VocalisConfig: Equatable, Sendable {
     public var openaiAPIKey: String
     /// xAI key for Grok Voice Transcribe (optional unless STT model is Grok).
     public var xaiAPIKey: String
+    /// Friend license — when set, STT/cleanup go through the license proxy (no local API keys needed).
+    public var licenseCode: String
+    /// Cloudflare Worker (or compatible) that validates the license and proxies OpenAI/xAI.
+    public var licenseProxyURL: String
     public var baseURL: String
     public var sttModel: String
     public var cleanupModel: String
@@ -18,6 +22,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public var languages: [String]
 
     public static let defaultBaseURL = "https://api.openai.com/v1"
+    /// Default Worker URL after `wrangler deploy` (override in config if needed).
+    public static let defaultLicenseProxyURL = "https://vocalis-proxy.daniele96l.workers.dev"
     /// Default to cheapest OpenAI STT; pick Grok in Settings for ~½ the cost.
     public static let defaultSTTModel = "gpt-4o-mini-transcribe"
     public static let defaultCleanupModel = "gpt-4o-mini"
@@ -27,6 +33,28 @@ public struct VocalisConfig: Equatable, Sendable {
     public static let defaultLanguages: [String] = LanguageCatalog.defaultCodes
 
     public var resolvedCleanupStyle: CleanupStyle { CleanupStyle.parse(cleanupStyle) }
+
+    /// Normalized license; empty means own-keys mode.
+    public var resolvedLicenseCode: String {
+        licenseCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public var hasLicense: Bool { !resolvedLicenseCode.isEmpty }
+
+    /// License wins over own keys when both are set.
+    public var usesLicense: Bool { hasLicense }
+
+    public var resolvedLicenseProxyURL: String {
+        let trimmed = licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return Self.defaultLicenseProxyURL }
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    public var authModeLabel: String {
+        if usesLicense { return "Licensed" }
+        if hasAPIKey { return "Own keys" }
+        return "Not configured"
+    }
 
     public static var configDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -50,6 +78,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public init(
         openaiAPIKey: String = "",
         xaiAPIKey: String = "",
+        licenseCode: String = "",
+        licenseProxyURL: String = defaultLicenseProxyURL,
         baseURL: String = defaultBaseURL,
         sttModel: String = defaultSTTModel,
         cleanupModel: String = defaultCleanupModel,
@@ -61,6 +91,8 @@ public struct VocalisConfig: Equatable, Sendable {
     ) {
         self.openaiAPIKey = openaiAPIKey
         self.xaiAPIKey = xaiAPIKey
+        self.licenseCode = licenseCode
+        self.licenseProxyURL = licenseProxyURL.isEmpty ? Self.defaultLicenseProxyURL : licenseProxyURL
         self.baseURL = baseURL
         self.sttModel = sttModel
         self.cleanupModel = cleanupModel
@@ -95,13 +127,15 @@ public struct VocalisConfig: Equatable, Sendable {
     public var hasOpenAIKey: Bool { !resolvedAPIKey.isEmpty }
     public var hasXAIKey: Bool { !resolvedXAIKey.isEmpty }
 
-    /// Ready to run speech-to-text for the selected STT model.
+    /// Ready to run speech-to-text for the selected STT model (license or provider key).
     public var hasTranscriptionKey: Bool {
-        usesGrokSTT ? hasXAIKey : hasOpenAIKey
+        if usesLicense { return true }
+        return usesGrokSTT ? hasXAIKey : hasOpenAIKey
     }
 
-    /// Ready to dictate (STT key + OpenAI key if cleanup is on).
+    /// Ready to dictate (license, or STT key + OpenAI key if cleanup is on).
     public var hasAPIKey: Bool {
+        if usesLicense { return true }
         guard hasTranscriptionKey else { return false }
         if ModelCatalog.isCleanupEnabled(cleanupModel) { return hasOpenAIKey }
         return true
@@ -120,8 +154,11 @@ public struct VocalisConfig: Equatable, Sendable {
         let body = """
         # ~/.config/vocalis/config.toml
         # Prefer env OPENAI_API_KEY; file key is fallback
+        # license_code (if set) wins over local keys — traffic goes via license_proxy_url
         openai_api_key = "\(openaiAPIKey)"
         xai_api_key = "\(xaiAPIKey)"
+        license_code = "\(licenseCode)"
+        license_proxy_url = "\(licenseProxyURL)"
         base_url = "\(baseURL)"
         stt_model = "\(sttModel)"
         cleanup_model = "\(cleanupModel)"
@@ -154,6 +191,9 @@ public struct VocalisConfig: Equatable, Sendable {
             switch key {
             case "openai_api_key": config.openaiAPIKey = value
             case "xai_api_key": config.xaiAPIKey = value
+            case "license_code": config.licenseCode = value
+            case "license_proxy_url":
+                config.licenseProxyURL = value.isEmpty ? defaultLicenseProxyURL : value
             case "base_url": config.baseURL = value.isEmpty ? defaultBaseURL : value
             case "stt_model": config.sttModel = value.isEmpty ? defaultSTTModel : value
             case "cleanup_model": config.cleanupModel = value.isEmpty ? defaultCleanupModel : value

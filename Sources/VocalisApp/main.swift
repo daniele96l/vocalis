@@ -121,6 +121,7 @@ struct HideFocusRing: ViewModifier {
 
 enum AppTab: String, CaseIterable, Identifiable {
     case home = "Home"
+    case account = "Account"
     case ai = "AI"
     case languages = "Languages"
     case usage = "Usage"
@@ -301,6 +302,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         home.target = self
         menu.addItem(home)
 
+        let account = NSMenuItem(title: "Account…", action: #selector(showAccount), keyEquivalent: "")
+        account.target = self
+        menu.addItem(account)
+
         let ai = NSMenuItem(title: "AI Settings…", action: #selector(showAI), keyEquivalent: ",")
         ai.target = self
         menu.addItem(ai)
@@ -333,6 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showHome() { openMain(tab: .home) }
+    @objc private func showAccount() { openMain(tab: .account) }
     @objc private func showAI() { openMain(tab: .ai) }
     @objc private func showLanguages() { openMain(tab: .languages) }
     @objc private func showUsage() { openMain(tab: .usage) }
@@ -351,7 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !snap.allCriticalGranted || !snap.inputMonitoring {
             openMain(tab: .setup)
         } else if !VocalisConfig.load().hasAPIKey {
-            openMain(tab: .ai)
+            openMain(tab: .account)
         } else {
             openMain(tab: .home)
         }
@@ -561,18 +567,27 @@ struct RootView: View {
                     case .home:
                         HomeView(
                             state: state,
+                            onGoAccount: { go(.account) },
                             onGoAI: { go(.ai) },
                             onGoUsage: { go(.usage) },
                             onGoSetup: { go(.setup) },
                             onRefresh: onRefresh
                         )
                         .transition(tabTransition)
+                    case .account:
+                        AccountSettingsView(
+                            state: state,
+                            onSavedKey: onSavedKey,
+                            onGoHome: { go(.home) },
+                            onGoAI: { go(.ai) }
+                        )
+                        .transition(tabTransition)
                     case .ai:
                         AISettingsView(
                             state: state,
-                            onSavedKey: onSavedKey,
                             onInputDeviceChanged: onInputDeviceChanged,
                             onModelsChanged: onModelsChanged,
+                            onGoAccount: { go(.account) },
                             onGoSetup: { go(.setup) },
                             onGoHome: { go(.home) }
                         )
@@ -597,7 +612,7 @@ struct RootView: View {
                             state: state,
                             onHotkeyChanged: onHotkeyChanged,
                             onGoHome: { go(.home) },
-                            onGoAI: { go(.ai) }
+                            onGoAccount: { go(.account) }
                         )
                         .transition(tabTransition)
                     }
@@ -678,6 +693,7 @@ struct TabStrip: View {
 
 struct HomeView: View {
     @ObservedObject var state: AppState
+    var onGoAccount: () -> Void
     var onGoAI: () -> Void
     var onGoUsage: () -> Void
     var onGoSetup: () -> Void
@@ -718,13 +734,17 @@ struct HomeView: View {
 
                 thinRule
 
-                HoverRow(action: onGoAI) {
+                HoverRow(action: onGoAccount) {
                     statusLine(
                         ok: state.keyConfigured,
-                        title: state.keyConfigured ? "API keys ready" : "API key missing",
+                        title: state.keyConfigured
+                            ? (VocalisConfig.load().usesLicense ? "Licensed" : "Own keys ready")
+                            : "License or API key missing",
                         detail: state.keyConfigured
-                            ? "OpenAI and/or xAI keys stored on this Mac."
-                            : "Add OpenAI and/or xAI keys in AI."
+                            ? (VocalisConfig.load().usesLicense
+                                ? "Friend license active — no local API keys needed."
+                                : "OpenAI and/or xAI keys stored on this Mac.")
+                            : "Activate a license or add your own keys in Account."
                     )
                 }
 
@@ -767,8 +787,10 @@ struct HomeView: View {
             .padding(.horizontal, 2)
 
             HStack(spacing: 8) {
-                Button("AI settings") { onGoAI() }
+                Button("Account") { onGoAccount() }
                     .buttonStyle(AccentButtonStyle())
+                Button("AI") { onGoAI() }
+                    .buttonStyle(QuietButtonStyle())
                 Button("Usage") { onGoUsage() }
                     .buttonStyle(QuietButtonStyle())
                 Button("Permissions") { onGoSetup() }
@@ -880,19 +902,228 @@ struct HomeIdleWave: View {
     }
 }
 
-// MARK: - AI Settings
+// MARK: - Account (license + API keys)
 
-struct AISettingsView: View {
+struct AccountSettingsView: View {
     @ObservedObject var state: AppState
     var onSavedKey: () -> Void
-    var onInputDeviceChanged: (String) -> Void
-    var onModelsChanged: () -> Void
-    var onGoSetup: () -> Void
     var onGoHome: () -> Void
+    var onGoAI: () -> Void
 
     @State private var config = VocalisConfig.load()
     @State private var pastedKey = ""
     @State private var pastedXAIKey = ""
+    @State private var pastedLicense = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                pageHeader(
+                    title: "Account",
+                    subtitle: "Activate a friend license or use your own API keys."
+                )
+
+                settingsSectionLabel("License")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Friends: paste a license code once. Same code works on multiple Macs — no API keys to copy.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 8) {
+                            Image(systemName: config.usesLicense ? "checkmark.seal.fill" : "ticket")
+                                .foregroundStyle(config.usesLicense ? VocalisTheme.ok : .secondary)
+                            Text(config.usesLicense ? "Licensed" : "No license")
+                                .font(.system(size: 13, weight: .medium))
+                            Spacer()
+                            Text(config.authModeLabel)
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        SecureField(
+                            config.usesLicense ? "Replace license…" : "VOC-XXXX-XXXX-XXXX",
+                            text: $pastedLicense
+                        )
+                        .textFieldStyle(.roundedBorder)
+
+                        HStack(spacing: 8) {
+                            Button("Activate license") { saveLicense() }
+                                .buttonStyle(AccentButtonStyle())
+                                .disabled(pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if config.usesLicense {
+                                Button("Clear license") { clearLicense() }
+                                    .buttonStyle(QuietButtonStyle())
+                            }
+                        }
+                    }
+                }
+
+                settingsSectionLabel("Your own API keys")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(
+                            config.usesLicense
+                                ? "License is active — local keys are ignored until you clear the license."
+                                : "Keys stay in ~/.config/vocalis on this Mac. Grok STT needs xAI; OpenAI models and cleanup need OpenAI."
+                        )
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Image(systemName: config.hasOpenAIKey ? "checkmark.seal.fill" : "key")
+                                    .foregroundStyle(config.hasOpenAIKey ? VocalisTheme.ok : .secondary)
+                                Text("OpenAI")
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Text(config.hasOpenAIKey ? "Saved" : "Missing")
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            SecureField(config.hasOpenAIKey ? "Replace OpenAI key…" : "sk-…", text: $pastedKey)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save OpenAI key") { saveKey() }
+                                .buttonStyle(AccentButtonStyle())
+                                .disabled(pastedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Image(systemName: config.hasXAIKey ? "checkmark.seal.fill" : "key")
+                                    .foregroundStyle(config.hasXAIKey ? VocalisTheme.ok : .secondary)
+                                Text("xAI (Grok)")
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Text(config.hasXAIKey ? "Saved" : "Missing")
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            SecureField(config.hasXAIKey ? "Replace xAI key…" : "xai-…", text: $pastedXAIKey)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save xAI key") { saveXAIKey() }
+                                .buttonStyle(AccentButtonStyle())
+                                .disabled(pastedXAIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                }
+
+                if !state.statusMessage.isEmpty {
+                    Text(state.statusMessage)
+                        .font(VocalisTheme.body)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Button("AI models…") { onGoAI() }
+                        .buttonStyle(QuietButtonStyle())
+                    Spacer()
+                    Button("Back to Home") { onGoHome() }
+                        .buttonStyle(AccentButtonStyle())
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(.top, 4)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
+        }
+        .onAppear {
+            config = VocalisConfig.load()
+            state.refresh(
+                permissions: nil,
+                config: config,
+                tapInstalled: true,
+                tapError: nil
+            )
+        }
+    }
+
+    private func saveKey() {
+        let trimmed = pastedKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        config.openaiAPIKey = trimmed
+        do {
+            try config.save()
+            pastedKey = ""
+            config = VocalisConfig.load()
+            state.keyConfigured = config.hasAPIKey
+            state.statusMessage = config.usesLicense
+                ? "OpenAI key saved (license still takes priority)."
+                : "OpenAI key saved."
+            onSavedKey()
+        } catch {
+            state.statusMessage = "Could not save OpenAI key."
+        }
+    }
+
+    private func saveXAIKey() {
+        let trimmed = pastedXAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        config.xaiAPIKey = trimmed
+        do {
+            try config.save()
+            pastedXAIKey = ""
+            config = VocalisConfig.load()
+            state.keyConfigured = config.hasAPIKey
+            state.statusMessage = config.usesLicense
+                ? "xAI key saved (license still takes priority)."
+                : "xAI key saved."
+            onSavedKey()
+        } catch {
+            state.statusMessage = "Could not save xAI key."
+        }
+    }
+
+    private func saveLicense() {
+        let trimmed = pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        config.licenseCode = trimmed
+        if config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            config.licenseProxyURL = VocalisConfig.defaultLicenseProxyURL
+        }
+        do {
+            try config.save()
+            pastedLicense = ""
+            config = VocalisConfig.load()
+            state.keyConfigured = config.hasAPIKey
+            state.statusMessage = "License activated — ready to dictate."
+            onSavedKey()
+        } catch {
+            state.statusMessage = "Could not save license."
+        }
+    }
+
+    private func clearLicense() {
+        config.licenseCode = ""
+        do {
+            try config.save()
+            pastedLicense = ""
+            config = VocalisConfig.load()
+            state.keyConfigured = config.hasAPIKey
+            state.statusMessage = config.hasAPIKey
+                ? "License cleared — using your own keys."
+                : "License cleared — add a license or your own keys."
+            onSavedKey()
+        } catch {
+            state.statusMessage = "Could not clear license."
+        }
+    }
+}
+
+// MARK: - AI Settings
+
+struct AISettingsView: View {
+    @ObservedObject var state: AppState
+    var onInputDeviceChanged: (String) -> Void
+    var onModelsChanged: () -> Void
+    var onGoAccount: () -> Void
+    var onGoSetup: () -> Void
+    var onGoHome: () -> Void
+
+    @State private var config = VocalisConfig.load()
     @State private var micDevices: [MicDevice] = MicDevices.listInputs()
     @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
@@ -920,7 +1151,7 @@ struct AISettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 pageHeader(
                     title: "AI",
-                    subtitle: "Keys, models, and microphone for this Mac."
+                    subtitle: "Models and microphone for this Mac."
                 )
 
                 settingsSectionLabel("Microphone")
@@ -1045,52 +1276,6 @@ struct AISettingsView: View {
                     }
                 }
 
-                settingsSectionLabel("API keys")
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Keys stay in ~/.config/vocalis on this Mac. Grok STT needs xAI; OpenAI models and cleanup need OpenAI.")
-                            .font(VocalisTheme.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 8) {
-                                Image(systemName: config.hasOpenAIKey ? "checkmark.seal.fill" : "key")
-                                    .foregroundStyle(config.hasOpenAIKey ? VocalisTheme.ok : .secondary)
-                                Text("OpenAI")
-                                    .font(.system(size: 13, weight: .medium))
-                                Spacer()
-                                Text(config.hasOpenAIKey ? "Saved" : "Missing")
-                                    .font(VocalisTheme.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            SecureField(config.hasOpenAIKey ? "Replace OpenAI key…" : "sk-…", text: $pastedKey)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Save OpenAI key") { saveKey() }
-                                .buttonStyle(AccentButtonStyle())
-                                .disabled(pastedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 8) {
-                                Image(systemName: config.hasXAIKey ? "checkmark.seal.fill" : "key")
-                                    .foregroundStyle(config.hasXAIKey ? VocalisTheme.ok : .secondary)
-                                Text("xAI (Grok)")
-                                    .font(.system(size: 13, weight: .medium))
-                                Spacer()
-                                Text(config.hasXAIKey ? "Saved" : "Missing")
-                                    .font(VocalisTheme.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            SecureField(config.hasXAIKey ? "Replace xAI key…" : "xai-…", text: $pastedXAIKey)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Save xAI key") { saveXAIKey() }
-                                .buttonStyle(AccentButtonStyle())
-                                .disabled(pastedXAIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    }
-                }
-
                 if !state.statusMessage.isEmpty {
                     Text(state.statusMessage)
                         .font(VocalisTheme.body)
@@ -1098,6 +1283,8 @@ struct AISettingsView: View {
                 }
 
                 HStack {
+                    Button("Account…") { onGoAccount() }
+                        .buttonStyle(QuietButtonStyle())
                     Button("Permissions…") { onGoSetup() }
                         .buttonStyle(QuietButtonStyle())
                     Spacer()
@@ -1137,14 +1324,16 @@ struct AISettingsView: View {
             try next.save()
             config = next
             onModelsChanged()
-            if ModelCatalog.isGrokSTT(model) {
+            if next.usesLicense {
+                state.statusMessage = "Model updated (licensed)."
+            } else if ModelCatalog.isGrokSTT(model) {
                 state.statusMessage = next.hasXAIKey
                     ? "Using Grok Voice Transcribe."
-                    : "Grok selected — add an xAI API key below."
+                    : "Grok selected — add an xAI key or license in Account."
             } else {
                 state.statusMessage = next.hasOpenAIKey
                     ? "Transcription model updated."
-                    : "OpenAI model selected — add an OpenAI API key below."
+                    : "OpenAI model selected — add a key or license in Account."
             }
         } catch {
             state.statusMessage = "Could not save model."
@@ -1192,38 +1381,6 @@ struct AISettingsView: View {
                 : "Live transcription off — one request on release."
         } catch {
             state.statusMessage = "Could not save setting."
-        }
-    }
-
-    private func saveKey() {
-        let trimmed = pastedKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        config.openaiAPIKey = trimmed
-        do {
-            try config.save()
-            pastedKey = ""
-            config = VocalisConfig.load()
-            state.keyConfigured = config.hasAPIKey
-            state.statusMessage = "OpenAI key saved."
-            onSavedKey()
-        } catch {
-            state.statusMessage = "Could not save OpenAI key."
-        }
-    }
-
-    private func saveXAIKey() {
-        let trimmed = pastedXAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        config.xaiAPIKey = trimmed
-        do {
-            try config.save()
-            pastedXAIKey = ""
-            config = VocalisConfig.load()
-            state.keyConfigured = config.hasAPIKey
-            state.statusMessage = "xAI key saved."
-            onSavedKey()
-        } catch {
-            state.statusMessage = "Could not save xAI key."
         }
     }
 }
@@ -1426,7 +1583,7 @@ struct OnboardingView: View {
     @ObservedObject var state: AppState
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onGoHome: () -> Void
-    var onGoAI: () -> Void
+    var onGoAccount: () -> Void
 
     @State private var recording = false
     @State private var recordHint = "Click Change hotkey, then hold your new shortcut."
@@ -1515,16 +1672,16 @@ struct OnboardingView: View {
                     .textSelection(.enabled)
 
                 if !state.keyConfigured {
-                    callout(text: "API key still missing — add it in AI when permissions are done.")
+                    callout(text: "License or API key still missing — add one in Account when permissions are done.")
                 }
 
                 HStack {
                     Button("Refresh") { permissions.refresh() }
                         .buttonStyle(QuietButtonStyle())
                     Spacer()
-                    Button("AI settings…") {
+                    Button("Account…") {
                         stopRecording(cancelled: true)
-                        onGoAI()
+                        onGoAccount()
                     }
                     .buttonStyle(QuietButtonStyle())
                     Button(permissions.snapshot.allCriticalGranted && permissions.snapshot.inputMonitoring

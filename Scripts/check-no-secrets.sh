@@ -30,9 +30,9 @@ if [[ -n "${files}" ]]; then
   done <<< "$files"
 fi
 
-# Ensure local config is never staged
-if git diff --cached --name-only | rg -n 'config\.toml|usage\.jsonl|\.env' >/dev/null 2>&1; then
-  echo "ERROR: refusing to commit config.toml / usage.jsonl / .env" >&2
+# Ensure local config / license ledger is never staged
+if git diff --cached --name-only | rg -n 'config\.toml|usage\.jsonl|\.env|licenses\.json' >/dev/null 2>&1; then
+  echo "ERROR: refusing to commit config.toml / usage.jsonl / .env / licenses.json" >&2
   fail=1
 fi
 

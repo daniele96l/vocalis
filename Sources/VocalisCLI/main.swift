@@ -147,6 +147,7 @@ enum VocalisCLI {
     static func status() {
         let config = VocalisConfig.load()
         let keySource: String = {
+            if config.usesLicense { return "license (proxy)" }
             if let env = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !env.isEmpty {
                 return "env OPENAI_API_KEY"
             }
@@ -160,7 +161,12 @@ enum VocalisCLI {
         print("Vocalis status")
         print("  config:     \(VocalisConfig.configFileURL.path)")
         print("  config exists: \(FileManager.default.fileExists(atPath: VocalisConfig.configFileURL.path))")
+        print("  auth:       \(config.authModeLabel)")
         print("  api key:    \(keySource)")
+        if config.usesLicense {
+            print("  license:    set")
+            print("  proxy:      \(config.resolvedLicenseProxyURL)")
+        }
         print("  base_url:   \(config.baseURL)")
         print("  stt_model:  \(config.sttModel)")
         print("  cleanup:    \(config.cleanupModel)")
