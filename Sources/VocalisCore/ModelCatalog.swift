@@ -18,6 +18,7 @@ public enum LanguageCatalog {
         Choice(code: "de", name: "German"),
         Choice(code: "pt", name: "Portuguese"),
         Choice(code: "nl", name: "Dutch"),
+        Choice(code: "cs", name: "Czech"),
         Choice(code: "pl", name: "Polish"),
         Choice(code: "ro", name: "Romanian"),
         Choice(code: "uk", name: "Ukrainian"),
