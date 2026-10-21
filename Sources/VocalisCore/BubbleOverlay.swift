@@ -18,10 +18,12 @@ public final class BubbleOverlayController {
     public init() {}
 
     public func show(_ state: BubbleState) {
-        model.state = state
-        if state != .listening {
-            model.level = 0
-            model.showingQuiet = true
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.84)) {
+            model.state = state
+            if state != .listening {
+                model.level = 0
+                model.showingQuiet = true
+            }
         }
         ensurePanel()
         guard let panel else { return }
@@ -31,19 +33,20 @@ public final class BubbleOverlayController {
         }
         let size: NSSize = {
             switch state {
-            case .listening: return NSSize(width: 280, height: 78)
-            default: return NSSize(width: 220, height: 48)
+            case .listening: return NSSize(width: 292, height: 86)
+            default: return NSSize(width: 228, height: 52)
             }
         }()
         var frame = panel.frame
         frame.size = size
-        panel.setFrame(frame, display: true)
+        panel.setFrame(frame, display: true, animate: true)
     }
 
     public func updateMeter(level: Float, micName: String) {
         model.level = level
-        model.micName = micName
-        // Enter quiet only when truly silent; leave quiet as soon as speech registers.
+        if model.micName != micName {
+            model.micName = micName
+        }
         if model.showingQuiet {
             if level >= 0.03 { model.showingQuiet = false }
         } else if level < 0.008 {
@@ -52,16 +55,18 @@ public final class BubbleOverlayController {
     }
 
     public func hide() {
-        model.state = .hidden
-        model.level = 0
-        model.showingQuiet = true
+        withAnimation(.easeOut(duration: 0.18)) {
+            model.state = .hidden
+            model.level = 0
+            model.showingQuiet = true
+        }
         panel?.orderOut(nil)
     }
 
     private func ensurePanel() {
         if panel != nil { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 280, height: 78),
+            contentRect: NSRect(x: 0, y: 0, width: 292, height: 86),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -122,23 +127,38 @@ struct BubbleView: View {
                 Color.clear.frame(width: 1, height: 1)
             case .listening:
                 listeningCard
+                    .transition(.asymmetric(
+                        insertion: .scale(scale: 0.94).combined(with: .opacity),
+                        removal: .opacity
+                    ))
             case .transcribing:
-                simpleCard(title: "Transcribing…")
+                simpleCard(title: "Transcribing…", spinning: true)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
             case .polishing:
-                simpleCard(title: "Polishing…")
+                simpleCard(title: "Polishing…", spinning: true)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
             case .error(let message):
-                simpleCard(title: message)
+                simpleCard(title: message, spinning: false)
+                    .transition(.opacity)
             }
         }
+        .animation(.spring(response: 0.36, dampingFraction: 0.86), value: model.state)
     }
 
     private var listeningCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                LevelMeter(level: model.level)
-                    .frame(width: 72, height: 18)
-                Text(model.showingQuiet ? "Listening (quiet)" : "Listening")
-                    .font(.system(size: 13, weight: .medium))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                LiveWaveform(level: model.level, barCount: 12)
+                    .frame(width: 96, height: 22)
+                HStack(spacing: 0) {
+                    Text("Listening")
+                        .font(.system(size: 13, weight: .medium))
+                    if model.showingQuiet {
+                        Text(" · quiet")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer(minLength: 0)
             }
             Text(model.micName)
@@ -146,44 +166,74 @@ struct BubbleView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(width: 268, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 280, alignment: .leading)
         .background(cardBackground)
     }
 
-    private func simpleCard(title: String) -> some View {
-        Text(title)
-            .font(.system(size: 13, weight: .medium))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(cardBackground)
+    private func simpleCard(title: String, spinning: Bool) -> some View {
+        HStack(spacing: 10) {
+            if spinning {
+                SoftSpinner()
+                    .frame(width: 14, height: 14)
+            }
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(cardBackground)
     }
 
     private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(scheme == .dark ? Color(white: 0.16) : Color.white)
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(scheme == .dark ? Color(white: 0.14) : Color.white)
             .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+            .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.10), radius: 16, y: 6)
     }
 }
 
-/// Simple level bars — no decorative wobble.
-struct LevelMeter: View {
+/// Always-wiggling bars: idle motion + mic level. Monochrome, Notion-quiet.
+struct LiveWaveform: View {
     var level: Float
+    var barCount: Int = 12
 
     var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(0..<8, id: \.self) { i in
-                let threshold = Float(i) / 8.0
-                Rectangle()
-                    .fill(level > threshold ? Color.primary : Color.primary.opacity(0.15))
-                    .frame(width: 6, height: 6 + CGFloat(i) * 1.5)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 2.5) {
+                ForEach(0..<barCount, id: \.self) { i in
+                    let phase = Double(i) * 0.55
+                    let wiggle = 0.35 + 0.65 * abs(sin(t * 4.2 + phase))
+                    let energy = Double(max(0.08, min(1, level)))
+                    let quietFloor = 0.22 + 0.12 * abs(sin(t * 2.1 + phase * 0.7))
+                    let amp = quietFloor + (1.0 - quietFloor) * energy * wiggle
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.22 + 0.78 * energy))
+                        .frame(width: 4, height: max(4, 22 * amp))
+                }
             }
+            .frame(maxHeight: 22)
         }
-        .animation(.easeOut(duration: 0.06), value: level)
+    }
+}
+
+struct SoftSpinner: View {
+    @State private var spin = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0.12, to: 0.88)
+            .stroke(Color.primary.opacity(0.55), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .rotationEffect(.degrees(spin ? 360 : 0))
+            .onAppear {
+                withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+                    spin = true
+                }
+            }
     }
 }
