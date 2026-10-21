@@ -27,16 +27,19 @@ else
   SRC="${VOCALIS_SRC:-$HOME/.cache/vocalis/src}"
   mkdir -p "$(dirname "$SRC")"
   if [[ -d "$SRC/.git" ]]; then
-    echo "==> Updating $SRC"
-    git -C "$SRC" pull --ff-only || true
+    echo "==> Updating $SRC to origin/main"
+    git -C "$SRC" remote set-url origin "$REPO_DEFAULT" 2>/dev/null || true
+    git -C "$SRC" fetch --prune origin
+    git -C "$SRC" checkout -B main origin/main
   else
     echo "==> Cloning $REPO_DEFAULT → $SRC"
-    git clone "$REPO_DEFAULT" "$SRC"
+    git clone --branch main --single-branch "$REPO_DEFAULT" "$SRC"
   fi
 fi
 
 cd "$SRC"
-chmod +x Scripts/package-app.sh Installer/install.sh
+echo "==> Source: $(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown) ($(git -C "$SRC" log -1 --pretty=%s 2>/dev/null || true))"
+chmod +x Scripts/package-app.sh Installer/install.sh Scripts/install-release.sh 2>/dev/null || true
 ./Scripts/package-app.sh release
 
 # Quit any running Vocalis so TCC binds to the freshly installed copy.
