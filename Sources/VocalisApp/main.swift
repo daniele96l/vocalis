@@ -598,8 +598,10 @@ struct HomeView: View {
                 Button(action: onGoSettings) {
                     statusLine(
                         ok: state.keyConfigured,
-                        title: state.keyConfigured ? "API key configured" : "API key missing",
-                        detail: state.keyConfigured ? "Stored on this Mac only." : "Add a key in Settings."
+                        title: state.keyConfigured ? "API keys ready" : "API key missing",
+                        detail: state.keyConfigured
+                            ? "OpenAI and/or xAI keys stored on this Mac."
+                            : "Add OpenAI and/or xAI keys in Settings."
                     )
                 }
                 .buttonStyle(.plain)
@@ -702,6 +704,7 @@ struct SettingsView: View {
 
     @State private var config = VocalisConfig.load()
     @State private var pastedKey = ""
+    @State private var pastedXAIKey = ""
     @State private var recording = false
     @State private var recordHint = "Click Change hotkey, then hold your new shortcut."
     @State private var localMonitor: Any?
@@ -711,8 +714,6 @@ struct SettingsView: View {
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
     @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
     @State private var selectedLanguages: Set<String> = Set(VocalisConfig.load().languages)
-
-    private var keyConfigured: Bool { config.hasAPIKey }
 
     private var exampleHoldCost: String {
         let stt = OpenAIPricing.estimateSTT(model: selectedSTT, durationSeconds: 10)
@@ -901,29 +902,49 @@ struct SettingsView: View {
                     }
                 }
 
-                sectionLabel("API key")
+                sectionLabel("API keys")
                 GlassCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if keyConfigured {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Keys stay in ~/.config/vocalis on this Mac. Grok STT needs an xAI key; OpenAI models and cleanup need an OpenAI key.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 8) {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundStyle(VocalisTheme.ok)
-                                Text("Key configured")
-                                    .font(.system(size: 14, weight: .medium))
+                                Image(systemName: config.hasOpenAIKey ? "checkmark.seal.fill" : "key")
+                                    .foregroundStyle(config.hasOpenAIKey ? VocalisTheme.ok : .secondary)
+                                Text("OpenAI")
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Text(config.hasOpenAIKey ? "Saved" : "Missing")
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
                             }
-                            Text("Stored only in ~/.config/vocalis on this Mac. Never shown in full.")
-                                .font(VocalisTheme.body)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Paste an OpenAI API key to enable dictation.")
-                                .font(VocalisTheme.body)
-                                .foregroundStyle(.secondary)
+                            SecureField(config.hasOpenAIKey ? "Replace OpenAI key…" : "sk-…", text: $pastedKey)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save OpenAI key") { saveKey() }
+                                .buttonStyle(AccentButtonStyle())
+                                .disabled(pastedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
-                        SecureField(keyConfigured ? "Replace key (optional)" : "sk-…", text: $pastedKey)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Save key") { saveKey() }
-                            .buttonStyle(AccentButtonStyle())
-                            .disabled(pastedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Image(systemName: config.hasXAIKey ? "checkmark.seal.fill" : "key")
+                                    .foregroundStyle(config.hasXAIKey ? VocalisTheme.ok : .secondary)
+                                Text("xAI (Grok)")
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Text(config.hasXAIKey ? "Saved" : "Missing")
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            SecureField(config.hasXAIKey ? "Replace xAI key…" : "xai-…", text: $pastedXAIKey)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save xAI key") { saveXAIKey() }
+                                .buttonStyle(AccentButtonStyle())
+                                .disabled(pastedXAIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
                     }
                 }
 
@@ -933,7 +954,7 @@ struct SettingsView: View {
                         usageRow("Today", cost: state.usageToday, detail: state.usageTodayDetail)
                         usageRow("This week", cost: state.usageWeek, detail: state.usageWeekDetail)
                         usageRow("All time", cost: state.usageTotal, detail: state.usageTotalDetail)
-                        Text("Local estimates from list prices (STT ≈ $0.003–$0.006/min; cleanup is token-priced). Not OpenAI billing.")
+                        Text("Local estimates (Grok ≈ $0.10/hr; OpenAI STT ≈ $0.18–$0.36/hr; cleanup is token-priced). Not provider billing.")
                             .font(VocalisTheme.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1020,7 +1041,15 @@ struct SettingsView: View {
             try next.save()
             config = next
             onModelsChanged()
-            state.statusMessage = "Transcription model updated."
+            if ModelCatalog.isGrokSTT(model) {
+                state.statusMessage = next.hasXAIKey
+                    ? "Using Grok Voice Transcribe."
+                    : "Grok selected — add an xAI API key below."
+            } else {
+                state.statusMessage = next.hasOpenAIKey
+                    ? "Transcription model updated."
+                    : "OpenAI model selected — add an OpenAI API key below."
+            }
         } catch {
             state.statusMessage = "Could not save model."
         }
@@ -1146,10 +1175,26 @@ struct SettingsView: View {
             pastedKey = ""
             config = VocalisConfig.load()
             state.keyConfigured = config.hasAPIKey
-            state.statusMessage = "Key saved."
+            state.statusMessage = "OpenAI key saved."
             onSavedKey()
         } catch {
-            state.statusMessage = "Could not save key."
+            state.statusMessage = "Could not save OpenAI key."
+        }
+    }
+
+    private func saveXAIKey() {
+        let trimmed = pastedXAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        config.xaiAPIKey = trimmed
+        do {
+            try config.save()
+            pastedXAIKey = ""
+            config = VocalisConfig.load()
+            state.keyConfigured = config.hasAPIKey
+            state.statusMessage = "xAI key saved."
+            onSavedKey()
+        } catch {
+            state.statusMessage = "Could not save xAI key."
         }
     }
 }

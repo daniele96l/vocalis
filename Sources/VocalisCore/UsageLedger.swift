@@ -10,9 +10,13 @@ public enum OpenAIPricing {
     public static let gpt41NanoInputUSDPerMillion: Double = 0.10
     public static let gpt41NanoOutputUSDPerMillion: Double = 0.40
 
-    /// OpenAI’s published “estimated cost / minute” for file transcription.
+    /// Published “estimated cost / minute” for file transcription.
     public static func sttUSDPerMinute(model: String) -> Double {
-        switch model.lowercased() {
+        let m = model.lowercased()
+        if m.hasPrefix("grok-voice-transcribe") || (m.hasPrefix("grok-") && m.contains("transcribe")) {
+            return 0.10 / 60.0 // xAI REST: $0.10/hr
+        }
+        switch m {
         case "gpt-4o-mini-transcribe": return 0.003
         case "gpt-transcribe": return 0.0045
         case "gpt-4o-transcribe", "gpt-4o-transcribe-diarize", "whisper-1": return 0.006

@@ -50,6 +50,81 @@ public final class OpenAIClient: Sendable {
     }
 
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
+        if config.usesGrokSTT {
+            return try await transcribeWithGrok(audioURL: audioURL)
+        }
+        return try await transcribeWithOpenAI(audioURL: audioURL)
+    }
+
+    private func transcribeWithGrok(audioURL: URL) async throws -> TranscriptionResult {
+        let key = config.resolvedXAIKey
+        guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: audioURL.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        if size < 200 { throw OpenAIClientError.emptyAudio }
+
+        let localDuration = Self.audioDurationSeconds(url: audioURL)
+        let languages = LanguageCatalog.normalize(config.languages)
+        let model = config.sttModel.isEmpty ? ModelCatalog.grokVoiceTranscribe : config.sttModel
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        func append(_ string: String) {
+            if let data = string.data(using: .utf8) { body.append(data) }
+        }
+
+        // xAI requires non-file fields before `file`.
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("\(model)\r\n")
+
+        if languages.count == 1, let only = languages.first {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("\(only)\r\n")
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"format\"\r\n\r\n")
+            append("true\r\n")
+        }
+
+        let filename = audioURL.pathExtension.isEmpty ? "audio.wav" : "audio.\(audioURL.pathExtension)"
+        let mime = audioURL.pathExtension.lowercased() == "wav" ? "audio/wav" : "audio/m4a"
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(mime)\r\n\r\n")
+        body.append(try Data(contentsOf: audioURL))
+        append("\r\n")
+        append("--\(boundary)--\r\n")
+
+        let url = URL(string: "\(ModelCatalog.xaiSTTBaseURL)/stt")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (data, response) = try await session.data(for: request)
+        try Self.throwIfNeeded(data: data, response: response)
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = json["text"] as? String else {
+            throw OpenAIClientError.decode
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { throw OpenAIClientError.emptyTranscript }
+
+        let apiDuration = (json["duration"] as? Double)
+            ?? (json["duration"] as? NSNumber)?.doubleValue
+        let duration = apiDuration ?? localDuration
+
+        let result = TranscriptionResult(text: trimmed, model: model, durationSeconds: duration)
+        UsageLedger.recordSTT(model: result.model, audioSeconds: result.durationSeconds)
+        return result
+    }
+
+    private func transcribeWithOpenAI(audioURL: URL) async throws -> TranscriptionResult {
         let key = config.resolvedAPIKey
         guard !key.isEmpty else { throw OpenAIClientError.missingKey }
 

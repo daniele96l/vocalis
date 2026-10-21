@@ -70,28 +70,42 @@ public enum ModelCatalog {
     /// Special cleanup value: paste Whisper text with no second API call.
     public static let cleanupOff = "off"
 
+    public static let grokVoiceTranscribe = "grok-voice-transcribe-2.0"
+    public static let xaiSTTBaseURL = "https://api.x.ai/v1"
+
     public static let sttChoices: [Choice] = [
+        Choice(
+            rawValue: grokVoiceTranscribe,
+            title: "Grok Voice Transcribe 2.0",
+            detail: "xAI — cheapest ≈ $0.0017/min ($0.10/hr)"
+        ),
         Choice(
             rawValue: "gpt-4o-mini-transcribe",
             title: "gpt-4o-mini-transcribe",
-            detail: "Cheapest STT ≈ $0.003/min"
+            detail: "OpenAI ≈ $0.003/min"
         ),
         Choice(
             rawValue: "gpt-transcribe",
             title: "gpt-transcribe",
-            detail: "Recommended ≈ $0.0045/min"
+            detail: "OpenAI ≈ $0.0045/min"
         ),
         Choice(
             rawValue: "whisper-1",
             title: "whisper-1",
-            detail: "Classic ≈ $0.006/min"
+            detail: "OpenAI ≈ $0.006/min"
         ),
         Choice(
             rawValue: "gpt-4o-transcribe",
             title: "gpt-4o-transcribe",
-            detail: "Higher quality ≈ $0.006/min"
+            detail: "OpenAI ≈ $0.006/min"
         ),
     ]
+
+    public static func isGrokSTT(_ model: String) -> Bool {
+        let m = model.lowercased()
+        return m.hasPrefix("grok-voice-transcribe")
+            || (m.hasPrefix("grok-") && m.contains("transcribe"))
+    }
 
     public static let cleanupChoices: [Choice] = [
         Choice(

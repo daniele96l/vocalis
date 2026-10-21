@@ -127,7 +127,7 @@ public final class DictationController {
             guard !Task.isCancelled else { return }
 
             do {
-                if self.config.streamingSTT, self.config.hasAPIKey {
+                if self.config.streamingSTT, self.config.hasTranscriptionKey {
                     let live = LiveTranscriber(client: OpenAIClient(config: self.config))
                     self.liveTranscriber = live
                     self.recorder.chunkSeconds = LiveTranscriber.defaultChunkSeconds
@@ -191,9 +191,14 @@ public final class DictationController {
             do {
                 let audioURL = try recorder.stop()
 
-                guard config.hasAPIKey else {
+                guard config.hasTranscriptionKey else {
                     try? FileManager.default.removeItem(at: audioURL)
-                    showError("Bad key")
+                    showError(config.usesGrokSTT ? "No xAI key" : "Bad key")
+                    return
+                }
+                if ModelCatalog.isCleanupEnabled(config.cleanupModel), !config.hasOpenAIKey {
+                    try? FileManager.default.removeItem(at: audioURL)
+                    showError("No OpenAI key")
                     return
                 }
 
