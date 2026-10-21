@@ -12,9 +12,11 @@ macOS menubar dictation: **hold hotkey → recording bubble → speech-to-text �
 |------|----------------|-----|
 | Just run Vocalis | Nothing (no Xcode) | [Download a release](#download-no-xcode--recommended) |
 | Update an old install | Nothing | [Update](#update) |
-| Build from source | **Command Line Tools** only (not full Xcode) | [Build from source](#build-from-source-no-full-xcode) |
+| Build from source | **Full Xcode** (App Store) | [Build from source](#build-from-source) |
 
-**main vs Releases:** GitHub `main` is always the newest source. [Releases](https://github.com/daniele96l/vocalis/releases) ship pre-built `.dmg` / `.zip` — use those if you don’t want to compile. If the app feels “old”, you probably installed an older Release; update with the steps below.
+**main vs Releases:** GitHub `main` is always the newest source. [Releases](https://github.com/daniele96l/vocalis/releases) ship pre-built `.dmg` / `.zip` — **use those on other Macs** so you never compile. If the app feels “old”, you probably installed an older Release; update with the steps below.
+
+**Don’t build with Command Line Tools only.** Recent CLT toolchains are missing SwiftUI macros (`SwiftUIMacros.StateMacro could not be found`). Friends / second laptops should use the Release installer, not `./Installer/install.sh`.
 
 ---
 
@@ -59,32 +61,23 @@ defaults read ~/Applications/Vocalis.app/Contents/Info CFBundleShortVersionStrin
 # or: defaults read /Applications/Vocalis.app/Contents/Info CFBundleShortVersionString
 ```
 
-### Built from source earlier
+### You cloned / tried `./Installer/install.sh` and it failed
 
-Re-run the installer (it resets the cache clone to `origin/main`):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/daniele96l/vocalis/main/Installer/install.sh | bash
-```
-
-Or if you already have a checkout:
+That’s expected without full Xcode. Switch to the pre-built Release (same version as GitHub):
 
 ```bash
-cd ~/vocalis   # or wherever you cloned
-git pull origin main
-./Installer/install.sh
+curl -fsSL https://raw.githubusercontent.com/daniele96l/vocalis/main/Scripts/install-release.sh | bash
 ```
-
-If an old cache is stuck: `rm -rf ~/.cache/vocalis/src` then install again.
 
 ---
 
-## Build from source (no full Xcode)
+## Build from source
 
-You do **not** need the full Xcode app (~10+ GB). The smaller **Apple Command Line Tools** package is enough (includes `swift` + `git`).
+Needs **full Xcode** from the App Store (SwiftUI macros). Command Line Tools alone is not enough on recent macOS.
 
 ```bash
-xcode-select --install          # once; ~1 GB, not full Xcode
+# after installing Xcode:
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 git clone https://github.com/daniele96l/vocalis.git ~/vocalis
 cd ~/vocalis
 ./Installer/install.sh
@@ -152,8 +145,8 @@ hotkey = "rightOption"
 
 - macOS 13+
 - A Vocalis license code **or** your own OpenAI / xAI API keys
-- To **run** a Release build: nothing else
-- To **build** from source: Command Line Tools (`xcode-select --install`) — full Xcode optional
+- To **run** a Release build: nothing else (recommended)
+- To **build** from source: full **Xcode** (not Command Line Tools alone)
 
 ## License
 
