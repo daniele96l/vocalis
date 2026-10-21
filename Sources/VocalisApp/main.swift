@@ -570,7 +570,6 @@ struct RootView: View {
                     case .ai:
                         AISettingsView(
                             state: state,
-                            onHotkeyChanged: onHotkeyChanged,
                             onSavedKey: onSavedKey,
                             onInputDeviceChanged: onInputDeviceChanged,
                             onModelsChanged: onModelsChanged,
@@ -596,6 +595,7 @@ struct RootView: View {
                         OnboardingView(
                             permissions: permissions,
                             state: state,
+                            onHotkeyChanged: onHotkeyChanged,
                             onGoHome: { go(.home) },
                             onGoAI: { go(.ai) }
                         )
@@ -884,7 +884,6 @@ struct HomeIdleWave: View {
 
 struct AISettingsView: View {
     @ObservedObject var state: AppState
-    var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
     var onInputDeviceChanged: (String) -> Void
     var onModelsChanged: () -> Void
@@ -894,9 +893,6 @@ struct AISettingsView: View {
     @State private var config = VocalisConfig.load()
     @State private var pastedKey = ""
     @State private var pastedXAIKey = ""
-    @State private var recording = false
-    @State private var recordHint = "Click Change hotkey, then hold your new shortcut."
-    @State private var localMonitor: Any?
     @State private var micDevices: [MicDevice] = MicDevices.listInputs()
     @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
@@ -924,30 +920,8 @@ struct AISettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 pageHeader(
                     title: "AI",
-                    subtitle: "Keys, models, hotkey, and microphone for this Mac."
+                    subtitle: "Keys, models, and microphone for this Mac."
                 )
-
-                settingsSectionLabel("Hotkey")
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(state.hotkeyLabel)
-                            .font(.system(size: 15, weight: .medium))
-                        Text(recording ? "Press new shortcut… (Esc to cancel)" : recordHint)
-                            .font(VocalisTheme.body)
-                            .foregroundStyle(recording ? VocalisTheme.warn : Color.secondary)
-                        HStack(spacing: 8) {
-                            Button(recording ? "Listening…" : "Change hotkey") {
-                                toggleRecording()
-                            }
-                            .buttonStyle(AccentButtonStyle())
-                            .disabled(recording)
-                            if recording {
-                                Button("Cancel") { stopRecording(cancelled: true) }
-                                    .buttonStyle(QuietButtonStyle())
-                            }
-                        }
-                    }
-                }
 
                 settingsSectionLabel("Microphone")
                 GlassCard {
@@ -1127,10 +1101,7 @@ struct AISettingsView: View {
                     Button("Permissions…") { onGoSetup() }
                         .buttonStyle(QuietButtonStyle())
                     Spacer()
-                    Button("Back to Home") {
-                        stopRecording(cancelled: true)
-                        onGoHome()
-                    }
+                    Button("Back to Home") { onGoHome() }
                     .buttonStyle(AccentButtonStyle())
                     .keyboardShortcut(.defaultAction)
                 }
@@ -1157,7 +1128,6 @@ struct AISettingsView: View {
                 tapError: nil
             )
         }
-        .onDisappear { stopRecording(cancelled: true) }
     }
 
     private func saveSTT(_ model: String) {
@@ -1222,63 +1192,6 @@ struct AISettingsView: View {
                 : "Live transcription off — one request on release."
         } catch {
             state.statusMessage = "Could not save setting."
-        }
-    }
-
-    private func toggleRecording() {
-        recording = true
-        recordHint = "Hold the keys you want, then release."
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            handleRecord(event)
-            return nil
-        }
-    }
-
-    private func handleRecord(_ event: NSEvent) {
-        if event.type == .keyDown && event.keyCode == 53 {
-            stopRecording(cancelled: true)
-            return
-        }
-        var cgFlags: CGEventFlags = []
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.control) { cgFlags.insert(.maskControl) }
-        if flags.contains(.shift) { cgFlags.insert(.maskShift) }
-        if flags.contains(.option) { cgFlags.insert(.maskAlternate) }
-        if flags.contains(.command) { cgFlags.insert(.maskCommand) }
-
-        let type: CGEventType = event.type == .flagsChanged ? .flagsChanged : .keyDown
-        if event.type == .keyDown || (event.type == .flagsChanged && isModifierKeyCode(Int64(event.keyCode))) {
-            if event.type == .flagsChanged {
-                let down =
-                    flags.contains(.option) || flags.contains(.shift)
-                    || flags.contains(.control) || flags.contains(.command)
-                if !down { return }
-            }
-            if let binding = HotkeyBinding.fromEvent(
-                keyCode: Int64(event.keyCode),
-                flags: cgFlags,
-                type: type
-            ) {
-                stopRecording(cancelled: false)
-                state.hotkeyLabel = binding.displayName
-                state.statusMessage = "Hotkey updated."
-                onHotkeyChanged(binding)
-            }
-        }
-    }
-
-    private func isModifierKeyCode(_ code: Int64) -> Bool {
-        [54, 55, 56, 58, 59, 60, 61, 62].contains(code)
-    }
-
-    private func stopRecording(cancelled: Bool) {
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
-        }
-        recording = false
-        if cancelled {
-            recordHint = "Click Change hotkey, then hold your new shortcut."
         }
     }
 
@@ -1511,24 +1424,49 @@ struct UsageSettingsView: View {
 struct OnboardingView: View {
     @ObservedObject var permissions: PermissionsModel
     @ObservedObject var state: AppState
+    var onHotkeyChanged: (HotkeyBinding) -> Void
     var onGoHome: () -> Void
     var onGoAI: () -> Void
+
+    @State private var recording = false
+    @State private var recordHint = "Click Change hotkey, then hold your new shortcut."
+    @State private var localMonitor: Any?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 pageHeader(
                     title: "Setup",
-                    subtitle: "Allow Microphone, Accessibility, and Input Monitoring so hold-to-talk can record and paste."
+                    subtitle: "Permissions and hotkey so hold-to-talk can record and paste."
                 )
 
-                Text("Hotkey: \(state.hotkeyLabel)")
-                    .font(VocalisTheme.body)
-                    .foregroundStyle(.secondary)
+                settingsSectionLabel("Hotkey")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(state.hotkeyLabel)
+                            .font(.system(size: 15, weight: .medium))
+                        Text(recording ? "Press new shortcut… (Esc to cancel)" : recordHint)
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(recording ? VocalisTheme.warn : Color.secondary)
+                        HStack(spacing: 8) {
+                            Button(recording ? "Listening…" : "Change hotkey") {
+                                toggleRecording()
+                            }
+                            .buttonStyle(AccentButtonStyle())
+                            .disabled(recording)
+                            if recording {
+                                Button("Cancel") { stopRecording(cancelled: true) }
+                                    .buttonStyle(QuietButtonStyle())
+                            }
+                        }
+                    }
+                }
 
                 if !permissions.duplicateInstallWarning.isEmpty {
                     callout(text: permissions.duplicateInstallWarning)
                 }
+
+                settingsSectionLabel("Permissions")
 
                 VStack(alignment: .leading, spacing: 0) {
                     PermissionRow(
@@ -1584,13 +1522,19 @@ struct OnboardingView: View {
                     Button("Refresh") { permissions.refresh() }
                         .buttonStyle(QuietButtonStyle())
                     Spacer()
-                    Button("AI settings…") { onGoAI() }
-                        .buttonStyle(QuietButtonStyle())
+                    Button("AI settings…") {
+                        stopRecording(cancelled: true)
+                        onGoAI()
+                    }
+                    .buttonStyle(QuietButtonStyle())
                     Button(permissions.snapshot.allCriticalGranted && permissions.snapshot.inputMonitoring
                            ? "Continue"
-                           : "Home") { onGoHome() }
-                        .buttonStyle(AccentButtonStyle())
-                        .keyboardShortcut(.defaultAction)
+                           : "Home") {
+                        stopRecording(cancelled: true)
+                        onGoHome()
+                    }
+                    .buttonStyle(AccentButtonStyle())
+                    .keyboardShortcut(.defaultAction)
                 }
                 .padding(.top, 4)
             }
@@ -1602,6 +1546,7 @@ struct OnboardingView: View {
             permissions.ensureInputMonitoringRegistered()
             permissions.refresh()
         }
+        .onDisappear { stopRecording(cancelled: true) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
         }
@@ -1624,6 +1569,63 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .strokeBorder(VocalisTheme.border, lineWidth: 1)
             )
+    }
+
+    private func toggleRecording() {
+        recording = true
+        recordHint = "Hold the keys you want, then release."
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            handleRecord(event)
+            return nil
+        }
+    }
+
+    private func handleRecord(_ event: NSEvent) {
+        if event.type == .keyDown && event.keyCode == 53 {
+            stopRecording(cancelled: true)
+            return
+        }
+        var cgFlags: CGEventFlags = []
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.control) { cgFlags.insert(.maskControl) }
+        if flags.contains(.shift) { cgFlags.insert(.maskShift) }
+        if flags.contains(.option) { cgFlags.insert(.maskAlternate) }
+        if flags.contains(.command) { cgFlags.insert(.maskCommand) }
+
+        let type: CGEventType = event.type == .flagsChanged ? .flagsChanged : .keyDown
+        if event.type == .keyDown || (event.type == .flagsChanged && isModifierKeyCode(Int64(event.keyCode))) {
+            if event.type == .flagsChanged {
+                let down =
+                    flags.contains(.option) || flags.contains(.shift)
+                    || flags.contains(.control) || flags.contains(.command)
+                if !down { return }
+            }
+            if let binding = HotkeyBinding.fromEvent(
+                keyCode: Int64(event.keyCode),
+                flags: cgFlags,
+                type: type
+            ) {
+                stopRecording(cancelled: false)
+                state.hotkeyLabel = binding.displayName
+                state.statusMessage = "Hotkey updated."
+                onHotkeyChanged(binding)
+            }
+        }
+    }
+
+    private func isModifierKeyCode(_ code: Int64) -> Bool {
+        [54, 55, 56, 58, 59, 60, 61, 62].contains(code)
+    }
+
+    private func stopRecording(cancelled: Bool) {
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
+        }
+        recording = false
+        if cancelled {
+            recordHint = "Click Change hotkey, then hold your new shortcut."
+        }
     }
 }
 
