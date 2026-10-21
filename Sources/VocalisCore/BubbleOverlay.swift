@@ -21,6 +21,7 @@ public final class BubbleOverlayController {
         model.state = state
         if state != .listening {
             model.level = 0
+            model.showingQuiet = true
         }
         ensurePanel()
         guard let panel else { return }
@@ -42,11 +43,18 @@ public final class BubbleOverlayController {
     public func updateMeter(level: Float, micName: String) {
         model.level = level
         model.micName = micName
+        // Enter quiet only when truly silent; leave quiet as soon as speech registers.
+        if model.showingQuiet {
+            if level >= 0.03 { model.showingQuiet = false }
+        } else if level < 0.008 {
+            model.showingQuiet = true
+        }
     }
 
     public func hide() {
         model.state = .hidden
         model.level = 0
+        model.showingQuiet = true
         panel?.orderOut(nil)
     }
 
@@ -99,6 +107,8 @@ final class BubbleModel: ObservableObject {
     @Published var state: BubbleState = .hidden
     @Published var level: Float = 0
     @Published var micName: String = "Microphone"
+    /// Hysteresis so the label does not flicker Listening ↔ quiet on soft speech.
+    var showingQuiet = true
 }
 
 struct BubbleView: View {
@@ -127,7 +137,7 @@ struct BubbleView: View {
             HStack(spacing: 10) {
                 LevelMeter(level: model.level)
                     .frame(width: 72, height: 18)
-                Text(model.level < 0.02 ? "Listening (quiet)" : "Listening")
+                Text(model.showingQuiet ? "Listening (quiet)" : "Listening")
                     .font(.system(size: 13, weight: .medium))
                 Spacer(minLength: 0)
             }
