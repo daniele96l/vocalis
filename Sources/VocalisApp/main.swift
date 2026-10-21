@@ -977,6 +977,49 @@ struct LicenseCodeField: NSViewRepresentable {
 
 // MARK: - Account (license + API keys)
 
+private enum LicenseServerStatus: Equatable {
+    case none
+    case checking
+    case valid
+    case invalid(String)
+    case unreachable(String)
+
+    var title: String {
+        switch self {
+        case .none: return "No license"
+        case .checking: return "Checking server…"
+        case .valid: return "Valid"
+        case .invalid: return "Invalid"
+        case .unreachable: return "Can't reach server"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .none: return "Paste a VOC-… code, then activate."
+        case .checking: return "Talking to the license proxy…"
+        case .valid: return "Proxy accepted this code — STT will use it."
+        case .invalid(let msg): return msg
+        case .unreachable(let msg): return msg
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .none: return "ticket"
+        case .checking: return "arrow.triangle.2.circlepath"
+        case .valid: return "checkmark.seal.fill"
+        case .invalid: return "xmark.seal.fill"
+        case .unreachable: return "wifi.exclamationmark"
+        }
+    }
+
+    var isGood: Bool {
+        if case .valid = self { return true }
+        return false
+    }
+}
+
 struct AccountSettingsView: View {
     @ObservedObject var state: AppState
     var onSavedKey: () -> Void
@@ -987,6 +1030,8 @@ struct AccountSettingsView: View {
     @State private var pastedKey = ""
     @State private var pastedXAIKey = ""
     @State private var pastedLicense = ""
+    @State private var licenseStatus: LicenseServerStatus = .none
+    @State private var licenseVerifyTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
@@ -1004,23 +1049,35 @@ struct AccountSettingsView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        HStack(spacing: 8) {
-                            Image(systemName: config.usesLicense ? "checkmark.seal.fill" : "ticket")
-                                .foregroundStyle(config.usesLicense ? VocalisTheme.ok : .secondary)
-                            Text(config.usesLicense ? "Licensed" : "No license")
-                                .font(.system(size: 13, weight: .medium))
-                            Spacer()
-                            Text(config.authModeLabel)
-                                .font(VocalisTheme.caption)
-                                .foregroundStyle(.secondary)
+                        // Server verdict — not just “a code is saved locally”.
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: licenseStatus.icon)
+                                .foregroundStyle(licenseStatusColor)
+                                .font(.system(size: 18))
+                                .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(licenseStatus.title)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(licenseStatusColor)
+                                Text(licenseStatus.detail)
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if config.usesLicense {
+                                    Text(config.resolvedLicenseCode)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .padding(.top, 2)
+                                }
+                            }
+                            Spacer(minLength: 0)
                         }
-
-                        if config.usesLicense {
-                            Text("Active: \(maskedLicense(config.resolvedLicenseCode))")
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(licenseStatusColor.opacity(0.08))
+                        )
 
                         // AppKit field — SwiftUI TextField often blocks ⌘V in menubar/accessory apps.
                         LicenseCodeField(text: $pastedLicense, placeholder: config.usesLicense ? "Replace license…" : "VOC-XXXX-XXXX-XXXX")
@@ -1037,15 +1094,22 @@ struct AccountSettingsView: View {
                         HStack(spacing: 8) {
                             Button("Paste & activate") { pasteAndActivateLicense() }
                                 .buttonStyle(AccentButtonStyle())
+                                .disabled(isLicenseBusy)
                             Button("Paste only") { pasteLicenseFromClipboard() }
                                 .buttonStyle(QuietButtonStyle())
-                            if !pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                .disabled(isLicenseBusy)
+                            if !VocalisConfig.normalizeLicenseCode(pastedLicense).isEmpty {
                                 Button("Activate") { saveLicense() }
                                     .buttonStyle(QuietButtonStyle())
+                                    .disabled(isLicenseBusy)
                             }
                             if config.usesLicense {
+                                Button("Refresh") { refreshLicenseStatus() }
+                                    .buttonStyle(QuietButtonStyle())
+                                    .disabled(isLicenseBusy)
                                 Button("Clear") { clearLicense() }
                                     .buttonStyle(QuietButtonStyle())
+                                    .disabled(isLicenseBusy)
                             }
                         }
                     }
@@ -1129,6 +1193,25 @@ struct AccountSettingsView: View {
                 tapInstalled: true,
                 tapError: nil
             )
+            refreshLicenseStatus()
+        }
+        .onDisappear {
+            licenseVerifyTask?.cancel()
+        }
+    }
+
+    private var isLicenseBusy: Bool {
+        if case .checking = licenseStatus { return true }
+        return false
+    }
+
+    private var licenseStatusColor: Color {
+        switch licenseStatus {
+        case .valid: return VocalisTheme.ok
+        case .invalid: return VocalisTheme.warn
+        case .unreachable: return VocalisTheme.warn
+        case .checking: return .secondary
+        case .none: return .secondary
         }
     }
 
@@ -1171,38 +1254,102 @@ struct AccountSettingsView: View {
     private func saveLicense() {
         let trimmed = VocalisConfig.normalizeLicenseCode(pastedLicense)
         guard !trimmed.isEmpty else { return }
-        config.licenseCode = trimmed
-        if config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            config.licenseProxyURL = VocalisConfig.defaultLicenseProxyURL
-        }
-        do {
-            try config.save()
-            pastedLicense = ""
-            config = VocalisConfig.load()
-            state.keyConfigured = config.hasAPIKey
-            state.statusMessage = "License saved — verifying with proxy…"
-            onSavedKey()
-            Task { @MainActor in
-                do {
-                    try await OpenAIClient(config: config).verifyLicense()
-                    state.statusMessage = "License OK — ready to dictate."
-                } catch {
-                    let detail = (error as? LocalizedError)?.errorDescription ?? "rejected"
-                    state.statusMessage = "Saved but proxy rejected: \(detail). Use a code from mint-licenses."
-                }
+        licenseVerifyTask?.cancel()
+        licenseStatus = .checking
+        state.statusMessage = "Checking license with proxy…"
+
+        licenseVerifyTask = Task { @MainActor in
+            // Verify BEFORE saving so Account never shows a false "valid".
+            var probe = config
+            if probe.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                probe.licenseProxyURL = VocalisConfig.defaultLicenseProxyURL
             }
-        } catch {
-            state.statusMessage = "Could not save license."
+            do {
+                try await OpenAIClient(config: probe).verifyLicense(code: trimmed)
+            } catch {
+                if Task.isCancelled { return }
+                licenseStatus = classifyLicenseError(error)
+                state.statusMessage = "License not activated — \(licenseStatus.detail)"
+                return
+            }
+            guard !Task.isCancelled else { return }
+
+            config.licenseCode = trimmed
+            if config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                config.licenseProxyURL = VocalisConfig.defaultLicenseProxyURL
+            }
+            do {
+                try config.save()
+                pastedLicense = ""
+                config = VocalisConfig.load()
+                state.keyConfigured = config.hasAPIKey
+                licenseStatus = .valid
+                state.statusMessage = "License valid — ready to dictate."
+                onSavedKey()
+            } catch {
+                licenseStatus = .unreachable("Proxy OK, but could not save locally.")
+                state.statusMessage = "Could not save license."
+            }
         }
     }
 
+    private func refreshLicenseStatus() {
+        licenseVerifyTask?.cancel()
+        config = VocalisConfig.load()
+        let code = config.resolvedLicenseCode
+        guard !code.isEmpty else {
+            licenseStatus = .none
+            return
+        }
+        licenseStatus = .checking
+        licenseVerifyTask = Task { @MainActor in
+            do {
+                try await OpenAIClient(config: config).verifyLicense()
+                guard !Task.isCancelled else { return }
+                licenseStatus = .valid
+                state.statusMessage = "License valid on proxy."
+            } catch {
+                guard !Task.isCancelled else { return }
+                licenseStatus = classifyLicenseError(error)
+                state.statusMessage = "License check failed — \(licenseStatus.detail)"
+            }
+        }
+    }
+
+    private func classifyLicenseError(_ error: Error) -> LicenseServerStatus {
+        if let client = error as? OpenAIClientError {
+            switch client {
+            case .http(let code, let body):
+                let lower = body.lowercased()
+                if lower.contains("invalid or missing license") || code == 401 || code == 403 {
+                    return .invalid("Proxy rejected this code (not in LICENSE_CODES).")
+                }
+                if code == 408 || lower.contains("timeout") {
+                    return .unreachable("Proxy timed out — check network, then Refresh.")
+                }
+                return .unreachable("Proxy HTTP \(code).")
+            case .missingKey:
+                return .none
+            default:
+                return .unreachable(client.errorDescription ?? "Proxy error")
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            return .unreachable("Network error — check internet, then Refresh.")
+        }
+        return .unreachable((error as? LocalizedError)?.errorDescription ?? "Could not reach proxy")
+    }
+
     private func clearLicense() {
+        licenseVerifyTask?.cancel()
         config.licenseCode = ""
         do {
             try config.save()
             pastedLicense = ""
             config = VocalisConfig.load()
             state.keyConfigured = config.hasAPIKey
+            licenseStatus = .none
             state.statusMessage = config.hasAPIKey
                 ? "License cleared — using your own keys."
                 : "License cleared — add a license or your own keys."
@@ -1259,11 +1406,6 @@ struct AccountSettingsView: View {
         return nil
     }
 
-    private func maskedLicense(_ code: String) -> String {
-        let parts = code.split(separator: "-")
-        guard parts.count >= 4 else { return code }
-        return "\(parts[0])-\(parts[1])-…-\(parts[parts.count - 1])"
-    }
 }
 
 // MARK: - AI Settings

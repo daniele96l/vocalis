@@ -99,17 +99,23 @@ public final class OpenAIClient: Sendable {
     }
 
     /// Ping the license proxy without spending STT credits.
-    public func verifyLicense() async throws {
-        guard config.usesLicense else { throw OpenAIClientError.missingKey }
-        let code = config.resolvedLicenseCode
-        guard !code.isEmpty else { throw OpenAIClientError.missingKey }
-        guard let url = URL(string: "\(config.resolvedLicenseProxyURL)/v1/license/verify") else {
+    /// Pass `code` to test a candidate before (or instead of) saving it.
+    public func verifyLicense(code: String? = nil) async throws {
+        let resolved = VocalisConfig.normalizeLicenseCode(code ?? config.licenseCode)
+        guard !resolved.isEmpty else { throw OpenAIClientError.missingKey }
+        let base = (code != nil)
+            ? (config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? VocalisConfig.defaultLicenseProxyURL
+                : config.resolvedLicenseProxyURL)
+            : config.resolvedLicenseProxyURL
+        guard let url = URL(string: "\(base)/v1/license/verify") else {
             throw OpenAIClientError.decode
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
-        request.setValue("Bearer \(code)", forHTTPHeaderField: "Authorization")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Bearer \(resolved)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         try Self.throwIfNeeded(data: data, response: response)
     }
