@@ -146,8 +146,9 @@ public enum MicDevices {
             _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultSystemOutputDevice, id: outID)
 
             if claimHeadset {
+                // Core Audio route + silent nudge only. IOBluetooth openConnection requires
+                // NSBluetoothAlwaysUsageDescription — keep that path optional / best-effort.
                 openPairedBluetoothConnection(matching: target.name)
-                // Brief near-silence on the headset output — same signal Music uses to steal AirPods.
                 playHandoffNudge(onOutputDevice: outID)
                 routeChanged = true
                 NSLog("Vocalis: claimed Bluetooth headset (\(target.name)) for Continuity handoff")
@@ -187,12 +188,17 @@ public enum MicDevices {
 
     /// Ask the paired BT device to connect (helps when another Mac still owns AirPods).
     private static func openPairedBluetoothConnection(matching inputName: String) {
+        // Without NSBluetoothAlwaysUsageDescription, pairedDevices/openConnection aborts the process.
+        guard Bundle.main.object(forInfoDictionaryKey: "NSBluetoothAlwaysUsageDescription") != nil else {
+            NSLog("Vocalis: skip BT openConnection (missing usage description)")
+            return
+        }
         let base = inputName
             .replacingOccurrences(of: " Microphone", with: "")
             .replacingOccurrences(of: " Mic", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !base.isEmpty,
-              let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
+        guard !base.isEmpty else { return }
+        let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
         for device in paired {
             guard let name = device.name, !name.isEmpty else { continue }
             let hit = name.localizedCaseInsensitiveContains(base)

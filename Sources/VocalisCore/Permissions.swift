@@ -242,8 +242,11 @@ public final class PermissionsModel: ObservableObject {
         )
 
         // Quietly re-install HID tap when macOS already granted IM but backend drifted.
+        // Defer so we don't recurse (retry → onTapStateChanged → refresh).
         if inputOK, (!installed || !hidBackend) {
-            hotkeyRetry?()
+            DispatchQueue.main.async { [weak self] in
+                self?.hotkeyRetry?()
+            }
         }
 
         let next = PermissionProbe.snapshot(
