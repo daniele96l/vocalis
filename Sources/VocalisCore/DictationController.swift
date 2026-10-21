@@ -105,6 +105,11 @@ public final class DictationController {
         try config.save()
     }
 
+    public func setSenseCheck(_ enabled: Bool) throws {
+        config.senseCheck = enabled
+        try config.save()
+    }
+
     public func setLanguages(_ codes: [String]) throws {
         config.languages = LanguageCatalog.normalize(codes)
         try config.save()
@@ -273,7 +278,7 @@ public final class DictationController {
                     transcriptText = try await client.transcribe(audioURL: audioURL).text
                 }
 
-                let text: String
+                var text: String
                 if ModelCatalog.isCleanupEnabled(config.cleanupModel) {
                     bubble.show(.polishing)
                     text = try await client.cleanup(text: transcriptText).text
@@ -281,11 +286,22 @@ public final class DictationController {
                     text = transcriptText
                 }
 
+                if config.senseCheck {
+                    bubble.show(.polishing)
+                    do {
+                        text = try await client.senseCheck(text: text).text
+                    } catch {
+                        NSLog("Vocalis: sense-check failed — keeping prior text (\(shortError(error)))")
+                    }
+                }
+
                 // Archive + clipboard always succeed before ⌘V — never lose the words.
-                let result = try Paster.deliver(
-                    text,
-                    archiveNote: ModelCatalog.isCleanupEnabled(config.cleanupModel) ? "cleaned" : "raw"
-                )
+                let note: String = {
+                    if config.senseCheck { return "sense-checked" }
+                    if ModelCatalog.isCleanupEnabled(config.cleanupModel) { return "cleaned" }
+                    return "raw"
+                }()
+                let result = try Paster.deliver(text, archiveNote: note)
                 switch result {
                 case .pasted:
                     try? await Task.sleep(nanoseconds: 120_000_000)
@@ -527,6 +543,18 @@ public final class DictationController {
                 }
             } else {
                 onEvent(.init(label: "Cleanup", detail: "Off — using raw transcript", status: .ok))
+            }
+
+            if config.senseCheck {
+                onEvent(.init(label: "Sense check", detail: "Would someone say this?…", status: .running))
+                do {
+                    let checked = try await client.senseCheck(text: finalText)
+                    finalText = checked.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if finalText.isEmpty { finalText = raw }
+                    onEvent(.init(label: "Sense check", detail: "\(finalText.count) chars · \(checked.model)", status: .ok))
+                } catch {
+                    onEvent(.init(label: "Sense check", detail: detailError(error) + " — skipped", status: .fail))
+                }
             }
 
             onEvent(.init(label: "Done", detail: "Result below (not pasted)", status: .ok))

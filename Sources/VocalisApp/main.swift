@@ -1430,6 +1430,7 @@ struct AISettingsView: View {
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
     @State private var selectedCleanupStyle: CleanupStyle = VocalisConfig.load().resolvedCleanupStyle
+    @State private var senseCheck: Bool = VocalisConfig.load().senseCheck
     @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
 
     private var exampleHoldCost: String {
@@ -1574,6 +1575,24 @@ struct AISettingsView: View {
                                 .foregroundStyle(.tertiary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+
+                        Toggle(isOn: $senseCheck) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Final sense check")
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(
+                                    senseCheck
+                                        ? "On — last pass asks if someone would really say this, then fixes nonsense."
+                                        : "Off — paste after cleanup (or raw STT) with no extra read."
+                                )
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .onChange(of: senseCheck) { enabled in
+                            saveSenseCheck(enabled)
+                        }
                     }
                 }
 
@@ -1607,6 +1626,7 @@ struct AISettingsView: View {
                 ? config.cleanupModel
                 : ModelCatalog.cleanupOff
             selectedCleanupStyle = config.resolvedCleanupStyle
+            senseCheck = config.senseCheck
             streamingSTT = config.streamingSTT
             micDevices = MicDevices.listInputs()
             state.refresh(
@@ -1680,6 +1700,21 @@ struct AISettingsView: View {
             state.statusMessage = enabled
                 ? "Live transcription on — chunks while you hold."
                 : "Live transcription off — one request on release."
+        } catch {
+            state.statusMessage = "Could not save setting."
+        }
+    }
+
+    private func saveSenseCheck(_ enabled: Bool) {
+        do {
+            var next = VocalisConfig.load()
+            next.senseCheck = enabled
+            try next.save()
+            senseCheck = enabled
+            onModelsChanged()
+            state.statusMessage = enabled
+                ? "Sense check on — final “would someone say this?” pass."
+                : "Sense check off."
         } catch {
             state.statusMessage = "Could not save setting."
         }

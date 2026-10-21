@@ -406,6 +406,84 @@ public final class OpenAIClient: Sendable {
         return result
     }
 
+    /// Final pass: keep text if a person would say it this way; otherwise minimal fix.
+    public func senseCheck(text: String) async throws -> CleanupResult {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return CleanupResult(text: text, model: "sense-skip", promptTokens: 0, completionTokens: 0)
+        }
+        guard config.usesLicense || config.hasOpenAIKey else {
+            return CleanupResult(text: trimmed, model: "sense-skip", promptTokens: 0, completionTokens: 0)
+        }
+        let key = try authToken(forProvider: .openai)
+        let model = ModelCatalog.isCleanupEnabled(config.cleanupModel)
+            ? config.cleanupModel
+            : VocalisConfig.defaultCleanupModel
+        let langs = LanguageCatalog.displayNames(for: config.languages)
+        let system = """
+        You are the last reader of a voice-dictated message (already cleaned once). \
+        Ask yourself: would a person really say or write this, in this order? Does it sound natural and coherent? \
+        If yes — return the text unchanged. \
+        If no (garbled, wrong word order, contradictions, cleanup invented nonsense) — rewrite with the smallest fix \
+        so it reads like something a person would naturally say. Keep the same meaning and language (\(langs)). \
+        Do not add new topics, titles, or structure. Output only the final message text.
+        """
+
+        let payload: [String: Any] = [
+            "model": model,
+            "temperature": 0.1,
+            "max_tokens": min(900, max(80, trimmed.count + 64)),
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": trimmed],
+            ],
+        ]
+        let url = URL(string: "\(openAIBaseURL)/chat/completions")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        do {
+            let requestToSend = request
+            let session = self.session
+            let (data, response) = try await Self.withTimeout(seconds: 3.5) {
+                try await session.data(for: requestToSend)
+            }
+            try Self.throwIfNeeded(data: data, response: response)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                throw OpenAIClientError.decode
+            }
+            let out = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let finalText = out.isEmpty ? trimmed : out
+            let usage = json["usage"] as? [String: Any]
+            let promptTokens = (usage?["prompt_tokens"] as? Int)
+                ?? Self.estimateTokens(system) + Self.estimateTokens(trimmed)
+            let completionTokens = (usage?["completion_tokens"] as? Int)
+                ?? Self.estimateTokens(finalText)
+            let result = CleanupResult(
+                text: finalText,
+                model: "\(model)+sense",
+                promptTokens: promptTokens,
+                completionTokens: completionTokens
+            )
+            UsageLedger.recordCleanup(
+                model: result.model,
+                promptTokens: result.promptTokens,
+                completionTokens: result.completionTokens
+            )
+            return result
+        } catch {
+            NSLog("Vocalis: sense-check timed out or failed — keeping prior text")
+            return CleanupResult(text: trimmed, model: "sense-timeout", promptTokens: 0, completionTokens: 0)
+        }
+    }
+
     private static func looksAlreadyClean(_ text: String) -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, t.count < 280 else { return false }

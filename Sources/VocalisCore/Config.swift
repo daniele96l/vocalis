@@ -13,6 +13,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public var cleanupModel: String
     /// How hard cleanup rewrites: light / fix / shape.
     public var cleanupStyle: String
+    /// Extra final pass: “would someone really say this?” — off by default.
+    public var senseCheck: Bool
     public var hotkey: String
     /// Core Audio device UID; empty = system default input.
     public var inputDeviceID: String
@@ -28,6 +30,7 @@ public struct VocalisConfig: Equatable, Sendable {
     public static let defaultSTTModel = ModelCatalog.grokVoiceTranscribe
     public static let defaultCleanupModel = "gpt-4o-mini"
     public static let defaultCleanupStyle = CleanupStyle.default.rawValue
+    public static let defaultSenseCheck = false
     public static let defaultHotkey = "rightOption"
     public static let defaultStreamingSTT = true
     public static let defaultLanguages: [String] = LanguageCatalog.defaultCodes
@@ -113,6 +116,7 @@ public struct VocalisConfig: Equatable, Sendable {
         sttModel: String = defaultSTTModel,
         cleanupModel: String = defaultCleanupModel,
         cleanupStyle: String = defaultCleanupStyle,
+        senseCheck: Bool = defaultSenseCheck,
         hotkey: String = defaultHotkey,
         inputDeviceID: String = "",
         streamingSTT: Bool = defaultStreamingSTT,
@@ -126,6 +130,7 @@ public struct VocalisConfig: Equatable, Sendable {
         self.sttModel = sttModel
         self.cleanupModel = cleanupModel
         self.cleanupStyle = CleanupStyle.parse(cleanupStyle).rawValue
+        self.senseCheck = senseCheck
         self.hotkey = hotkey
         self.inputDeviceID = inputDeviceID
         self.streamingSTT = streamingSTT
@@ -192,6 +197,7 @@ public struct VocalisConfig: Equatable, Sendable {
         stt_model = "\(sttModel)"
         cleanup_model = "\(cleanupModel)"
         cleanup_style = "\(CleanupStyle.parse(cleanupStyle).rawValue)"
+        sense_check = "\(senseCheck)"
         hotkey = "\(hotkey)"
         input_device_id = "\(inputDeviceID)"
         streaming_stt = "\(streamingSTT)"
@@ -227,6 +233,9 @@ public struct VocalisConfig: Equatable, Sendable {
             case "stt_model": config.sttModel = value.isEmpty ? defaultSTTModel : value
             case "cleanup_model": config.cleanupModel = value.isEmpty ? defaultCleanupModel : value
             case "cleanup_style": config.cleanupStyle = CleanupStyle.parse(value).rawValue
+            case "sense_check":
+                let v = value.lowercased()
+                config.senseCheck = (v == "true" || v == "1" || v == "yes" || v == "on")
             case "hotkey": config.hotkey = value.isEmpty ? defaultHotkey : value
             case "input_device_id": config.inputDeviceID = value
             case "streaming_stt":
