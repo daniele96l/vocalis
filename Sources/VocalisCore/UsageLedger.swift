@@ -1,26 +1,51 @@
 import Foundation
 
 /// Published OpenAI list prices used for local estimates (USD).
-/// Update if OpenAI changes pricing — these are approximate for Settings “Estimated”.
-/// - whisper-1 / gpt-4o-transcribe-class STT: $0.006 per minute of audio
-/// - gpt-4o-mini chat: $0.150 / 1M input tokens, $0.600 / 1M output tokens
+/// Approximate Settings “Estimated” figures — not an invoice.
 public enum OpenAIPricing {
-    public static let whisperUSDPerMinute: Double = 0.006
     public static let gpt4oMiniInputUSDPerMillion: Double = 0.150
     public static let gpt4oMiniOutputUSDPerMillion: Double = 0.600
+    public static let gpt4oInputUSDPerMillion: Double = 2.50
+    public static let gpt4oOutputUSDPerMillion: Double = 10.0
+    public static let gpt41NanoInputUSDPerMillion: Double = 0.10
+    public static let gpt41NanoOutputUSDPerMillion: Double = 0.40
+
+    /// Published “estimated cost / minute” for file transcription.
+    public static func sttUSDPerMinute(model: String) -> Double {
+        let m = model.lowercased()
+        if m.hasPrefix("grok-voice-transcribe") || (m.hasPrefix("grok-") && m.contains("transcribe")) {
+            return 0.10 / 60.0 // xAI REST: $0.10/hr
+        }
+        switch m {
+        case "gpt-4o-mini-transcribe": return 0.003
+        case "gpt-transcribe": return 0.0045
+        case "gpt-4o-transcribe", "gpt-4o-transcribe-diarize", "whisper-1": return 0.006
+        default: return 0.006
+        }
+    }
 
     public static func estimateSTT(model: String, durationSeconds: Double) -> Double {
         let minutes = max(durationSeconds, 0) / 60.0
-        // Same published minute rate for whisper-1; treat other STT models similarly for v1.
-        _ = model
-        return minutes * whisperUSDPerMinute
+        return minutes * sttUSDPerMinute(model: model)
     }
 
     public static func estimateCleanup(model: String, promptTokens: Int, completionTokens: Int) -> Double {
-        _ = model
-        let input = Double(max(promptTokens, 0)) / 1_000_000.0 * gpt4oMiniInputUSDPerMillion
-        let output = Double(max(completionTokens, 0)) / 1_000_000.0 * gpt4oMiniOutputUSDPerMillion
+        if !ModelCatalog.isCleanupEnabled(model) { return 0 }
+        let (inRate, outRate) = cleanupRates(model: model)
+        let input = Double(max(promptTokens, 0)) / 1_000_000.0 * inRate
+        let output = Double(max(completionTokens, 0)) / 1_000_000.0 * outRate
         return input + output
+    }
+
+    private static func cleanupRates(model: String) -> (Double, Double) {
+        switch model.lowercased() {
+        case "gpt-4o":
+            return (gpt4oInputUSDPerMillion, gpt4oOutputUSDPerMillion)
+        case "gpt-4.1-nano":
+            return (gpt41NanoInputUSDPerMillion, gpt41NanoOutputUSDPerMillion)
+        default:
+            return (gpt4oMiniInputUSDPerMillion, gpt4oMiniOutputUSDPerMillion)
+        }
     }
 }
 

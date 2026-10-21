@@ -28,8 +28,23 @@ elif [[ -f "$ROOT/Resources/AppIcon-source.png" ]]; then
   cp "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
 fi
 
-# Ad-hoc sign so TCC prompts (mic / accessibility) can bind to the bundle id
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+# Prefer a stable local codesign identity when available so TCC entries stick across
+# rebuilds. Fall back to ad-hoc. Never enable hardened runtime here without a full
+# entitlement set — it breaks Microphone for unsigned/local builds.
+ENTITLEMENTS="$ROOT/Resources/Vocalis.entitlements"
+SIGN_ID="${VOCALIS_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_ID" ]]; then
+  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Vocalis Local Codesign/{print $2; exit}')"
+fi
+if [[ -n "$SIGN_ID" ]]; then
+  echo "Signing with identity: $SIGN_ID"
+  codesign --force --deep --sign "$SIGN_ID" --identifier "com.daniele96l.vocalis" \
+    --entitlements "$ENTITLEMENTS" "$APP_DIR" >/dev/null
+else
+  echo "Signing ad-hoc (set VOCALIS_SIGN_IDENTITY or create 'Vocalis Local Codesign' for stable TCC)"
+  codesign --force --deep --sign - --identifier "com.daniele96l.vocalis" \
+    --entitlements "$ENTITLEMENTS" "$APP_DIR" >/dev/null
+fi
 
 # Install CLI as `vocalis` (product is vocalis-cli to avoid case-collision with Vocalis)
 cp "$BIN_DIR/vocalis-cli" "$ROOT/.build/vocalis"

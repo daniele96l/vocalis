@@ -36,10 +36,6 @@ public struct CleanupResult: Sendable {
 }
 
 public final class OpenAIClient: Sendable {
-    public static let cleanupSystemPrompt = """
-    You clean dictated speech. Fix typos, punctuation, and casing. Keep the speaker’s meaning and language. Do not add preamble or quotes. Output only the cleaned text.
-    """
-
     private let config: VocalisConfig
     private let session: URLSession
 
@@ -48,7 +44,93 @@ public final class OpenAIClient: Sendable {
         self.session = session
     }
 
+    private var cleanupSystemPrompt: String {
+        let langs = LanguageCatalog.displayNames(for: config.languages)
+        return "Fix typos, punctuation, casing. Keep meaning. Preferred languages: \(langs). Do not translate. Output only cleaned text."
+    }
+
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
+        if config.usesGrokSTT {
+            return try await transcribeWithGrok(audioURL: audioURL)
+        }
+        return try await transcribeWithOpenAI(audioURL: audioURL)
+    }
+
+    private func transcribeWithGrok(audioURL: URL) async throws -> TranscriptionResult {
+        let key = config.resolvedXAIKey
+        guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: audioURL.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        if size < 200 { throw OpenAIClientError.emptyAudio }
+
+        // Grok rejects IEEE-float WAVs from AVAudioEngine/AudioQueue ("no samples").
+        let uploadURL = try AudioFormatConversion.grokCompatibleWAV(from: audioURL)
+        defer {
+            if uploadURL != audioURL {
+                try? FileManager.default.removeItem(at: uploadURL)
+            }
+        }
+
+        let localDuration = Self.audioDurationSeconds(url: uploadURL)
+        let languages = LanguageCatalog.normalize(config.languages)
+        let model = config.sttModel.isEmpty ? ModelCatalog.grokVoiceTranscribe : config.sttModel
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        func append(_ string: String) {
+            if let data = string.data(using: .utf8) { body.append(data) }
+        }
+
+        // xAI requires non-file fields before `file`.
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("\(model)\r\n")
+
+        if languages.count == 1, let only = languages.first {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("\(only)\r\n")
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"format\"\r\n\r\n")
+            append("true\r\n")
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+        append("Content-Type: audio/wav\r\n\r\n")
+        body.append(try Data(contentsOf: uploadURL))
+        append("\r\n")
+        append("--\(boundary)--\r\n")
+
+        let url = URL(string: "\(ModelCatalog.xaiSTTBaseURL)/stt")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (data, response) = try await session.data(for: request)
+        try Self.throwIfNeeded(data: data, response: response)
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = json["text"] as? String else {
+            throw OpenAIClientError.decode
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { throw OpenAIClientError.emptyTranscript }
+
+        let apiDuration = (json["duration"] as? Double)
+            ?? (json["duration"] as? NSNumber)?.doubleValue
+        let duration = apiDuration ?? localDuration
+
+        let result = TranscriptionResult(text: trimmed, model: model, durationSeconds: duration)
+        UsageLedger.recordSTT(model: result.model, audioSeconds: result.durationSeconds)
+        return result
+    }
+
+    private func transcribeWithOpenAI(audioURL: URL) async throws -> TranscriptionResult {
         let key = config.resolvedAPIKey
         guard !key.isEmpty else { throw OpenAIClientError.missingKey }
 
@@ -57,6 +139,7 @@ public final class OpenAIClient: Sendable {
         if size < 200 { throw OpenAIClientError.emptyAudio }
 
         let localDuration = Self.audioDurationSeconds(url: audioURL)
+        let languages = LanguageCatalog.normalize(config.languages)
 
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
@@ -68,13 +151,29 @@ public final class OpenAIClient: Sendable {
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(config.sttModel)\r\n")
 
+        // whisper-1 supports verbose_json (includes duration). Newer STT models use json.
+        let responseFormat = config.sttModel.lowercased() == "whisper-1" ? "verbose_json" : "json"
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
-        append("verbose_json\r\n")
+        append("\(responseFormat)\r\n")
 
+        // Single preferred language → hard language pin. Multiple → prompt-only (API takes one code).
+        if languages.count == 1, let only = languages.first {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("\(only)\r\n")
+        }
+
+        let prompt = LanguageCatalog.transcriptionPrompt(for: languages)
         append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n")
-        append("Content-Type: audio/m4a\r\n\r\n")
+        append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+        append("\(prompt)\r\n")
+
+        let filename = audioURL.pathExtension.isEmpty ? "audio.wav" : "audio.\(audioURL.pathExtension)"
+        let mime = audioURL.pathExtension.lowercased() == "wav" ? "audio/wav" : "audio/m4a"
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(mime)\r\n\r\n")
         body.append(try Data(contentsOf: audioURL))
         append("\r\n")
         append("--\(boundary)--\r\n")
@@ -82,6 +181,7 @@ public final class OpenAIClient: Sendable {
         let url = URL(string: "\(config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 60
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
@@ -106,56 +206,123 @@ public final class OpenAIClient: Sendable {
     }
 
     public func cleanup(text: String) async throws -> CleanupResult {
+        guard ModelCatalog.isCleanupEnabled(config.cleanupModel) else {
+            return CleanupResult(
+                text: text,
+                model: ModelCatalog.cleanupOff,
+                promptTokens: 0,
+                completionTokens: 0
+            )
+        }
         let key = config.resolvedAPIKey
         guard !key.isEmpty else { throw OpenAIClientError.missingKey }
+
+        // Skip a second API hop when Whisper already looks usable.
+        if Self.looksAlreadyClean(text) {
+            return CleanupResult(
+                text: text,
+                model: "skipped",
+                promptTokens: 0,
+                completionTokens: 0
+            )
+        }
 
         let payload: [String: Any] = [
             "model": config.cleanupModel,
             "temperature": 0,
+            "max_tokens": min(400, max(64, text.count / 2 + 32)),
             "messages": [
-                ["role": "system", "content": Self.cleanupSystemPrompt],
+                ["role": "system", "content": cleanupSystemPrompt],
                 ["role": "user", "content": text],
             ],
         ]
         let url = URL(string: "\(config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/chat/completions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 8
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await session.data(for: request)
-        try Self.throwIfNeeded(data: data, response: response)
+        // Prefer snappy paste: if polish is slow, return raw transcript.
+        let result: CleanupResult
+        do {
+            let requestToSend = request
+            let session = self.session
+            let (data, response) = try await Self.withTimeout(seconds: 2.5) {
+                try await session.data(for: requestToSend)
+            }
+            try Self.throwIfNeeded(data: data, response: response)
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw OpenAIClientError.decode
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                throw OpenAIClientError.decode
+            }
+            let cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let finalText = cleaned.isEmpty ? text : cleaned
+
+            let usage = json["usage"] as? [String: Any]
+            let promptTokens = (usage?["prompt_tokens"] as? Int)
+                ?? (usage?["prompt_tokens"] as? NSNumber)?.intValue
+                ?? Self.estimateTokens(cleanupSystemPrompt) + Self.estimateTokens(text)
+            let completionTokens = (usage?["completion_tokens"] as? Int)
+                ?? (usage?["completion_tokens"] as? NSNumber)?.intValue
+                ?? Self.estimateTokens(finalText)
+
+            result = CleanupResult(
+                text: finalText,
+                model: config.cleanupModel,
+                promptTokens: promptTokens,
+                completionTokens: completionTokens
+            )
+        } catch {
+            NSLog("Vocalis: cleanup timed out or failed — pasting raw transcript")
+            return CleanupResult(
+                text: text,
+                model: "timeout",
+                promptTokens: 0,
+                completionTokens: 0
+            )
         }
-        let cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalText = cleaned.isEmpty ? text : cleaned
 
-        let usage = json["usage"] as? [String: Any]
-        let promptTokens = (usage?["prompt_tokens"] as? Int)
-            ?? (usage?["prompt_tokens"] as? NSNumber)?.intValue
-            ?? Self.estimateTokens(Self.cleanupSystemPrompt) + Self.estimateTokens(text)
-        let completionTokens = (usage?["completion_tokens"] as? Int)
-            ?? (usage?["completion_tokens"] as? NSNumber)?.intValue
-            ?? Self.estimateTokens(finalText)
-
-        let result = CleanupResult(
-            text: finalText,
-            model: config.cleanupModel,
-            promptTokens: promptTokens,
-            completionTokens: completionTokens
-        )
         UsageLedger.recordCleanup(
             model: result.model,
             promptTokens: result.promptTokens,
             completionTokens: result.completionTokens
         )
         return result
+    }
+
+    private static func looksAlreadyClean(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t.count < 280 else { return false }
+        // No obvious speech artifacts and already punctuated/capitalized.
+        let lower = t.lowercased()
+        let fillers = [" um ", " uh ", " erm ", " you know "]
+        if fillers.contains(where: { lower.contains($0) }) { return false }
+        if t.contains("  ") { return false }
+        let first = t.first
+        let capitalized = first?.isUppercase == true || first?.isNumber == true
+        let punctuated = [".", "!", "?", "…"].contains { t.hasSuffix(String($0)) }
+        return capitalized && punctuated
+    }
+
+    private static func withTimeout<T: Sendable>(
+        seconds: Double,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw OpenAIClientError.http(408, "timeout")
+            }
+            let value = try await group.next()!
+            group.cancelAll()
+            return value
+        }
     }
 
     private static func audioDurationSeconds(url: URL) -> Double {

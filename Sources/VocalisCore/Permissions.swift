@@ -8,8 +8,8 @@ import IOKit.hid
 public struct PermissionSnapshot: Equatable, Sendable {
     public var microphone: Bool
     public var accessibility: Bool
-    /// True only after a functional HID tap has received a key (not IOHID alone —
-    /// IOHID/CGPreflight false-positive when Vocalis is absent from System Settings).
+    /// True only after a functional HID tap has received a key (not IOHID/CGPreflight alone —
+    /// those can false-positive when Vocalis is absent from System Settings).
     public var inputMonitoring: Bool
     public var eventTapInstalled: Bool
 
@@ -22,8 +22,78 @@ public struct PermissionSnapshot: Equatable, Sendable {
     }
 }
 
+public enum AppInstallProbe {
+    public static var bundleIdentifier: String {
+        Bundle.main.bundleIdentifier ?? "com.daniele96l.vocalis"
+    }
+
+    /// Path of the running process's .app (or the executable if not bundled).
+    public static var runningAppPath: String {
+        let bundle = Bundle.main.bundleURL
+        if bundle.pathExtension == "app" {
+            return bundle.path
+        }
+        return Bundle.main.executableURL?.path
+            ?? CommandLine.arguments.first
+            ?? bundle.path
+    }
+
+    public static var isPackagedApp: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
+    /// Other Vocalis.app copies on disk (same bundle id), excluding the running one.
+    public static func otherInstallPaths() -> [String] {
+        let running = (runningAppPath as NSString).standardizingPath
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        // Only warn about real installs — ignore .build packaging artifacts.
+        let candidates = [
+            "/Applications/Vocalis.app",
+            "\(home)/Applications/Vocalis.app",
+        ]
+        var found: [String] = []
+        var seen = Set<String>()
+        for path in candidates {
+            let standardized = (path as NSString).standardizingPath
+            guard standardized != running else { continue }
+            guard !seen.contains(standardized) else { continue }
+            guard FileManager.default.fileExists(atPath: standardized) else { continue }
+            let info = Bundle(path: standardized)?.infoDictionary
+            let id = info?["CFBundleIdentifier"] as? String
+            if id == nil || id == bundleIdentifier {
+                seen.insert(standardized)
+                found.append(standardized)
+            }
+        }
+        return found
+    }
+
+    public static var preferredManualAddPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let preferred = [
+            "\(home)/Applications/Vocalis.app",
+            "/Applications/Vocalis.app",
+        ]
+        for path in preferred where FileManager.default.fileExists(atPath: path) {
+            return path
+        }
+        if isPackagedApp { return runningAppPath }
+        return "\(home)/Applications/Vocalis.app"
+    }
+}
+
+public enum ListenEventTCCState: Equatable, Sendable {
+    /// In the Input Monitoring list and allowed.
+    case granted
+    /// Typically listed but toggle Off (or explicitly denied).
+    case denied
+    /// Not yet registered — may be missing from the list.
+    case unknown
+}
+
 public enum PermissionProbe {
     public static func microphoneGranted() -> Bool {
+        // Status is for the running code identity (this process / bundle).
         AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
@@ -31,8 +101,27 @@ public enum PermissionProbe {
         Paster.isAccessibilityTrusted(prompt: false)
     }
 
+    /// TCC listen-event state (IOHID). Denied usually means Vocalis is listed but Off.
+    public static func listenEventTCCState() -> ListenEventTCCState {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted: return .granted
+        case kIOHIDAccessTypeDenied: return .denied
+        default: return .unknown
+        }
+    }
+
+    /// Register with TCC Input Monitoring and surface the system prompt when possible.
+    /// Prefer CGRequestListenEventAccess (adds the .app to the list); IOHID as backup;
+    /// a probe HID tap also forces TCC to notice the client.
+    @discardableResult
     public static func requestInputMonitoring() -> Bool {
-        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        // CG APIs bind to the running code signature / bundle — must be the packaged .app.
+        let cgGranted = CGRequestListenEventAccess()
+        let iohidGranted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        // Creating (or failing to create) a listen-only HID tap is what often makes the
+        // app appear under Privacy & Security → Input Monitoring.
+        _ = canCreateListenOnlyHIDTap()
+        return cgGranted || iohidGranted || CGPreflightListenEventAccess()
     }
 
     /// HID listen-only tap — session taps can succeed with Accessibility alone.
@@ -66,11 +155,20 @@ public enum PermissionProbe {
 public final class PermissionsModel: ObservableObject {
     @Published public private(set) var snapshot: PermissionSnapshot
     @Published public private(set) var hotkeyStatusMessage: String = ""
+    @Published public private(set) var runningAppPath: String = AppInstallProbe.runningAppPath
+    @Published public private(set) var duplicateInstallWarning: String = ""
+    @Published public private(set) var inputMonitoringHelp: String = ""
+    @Published public private(set) var accessibilityHelp: String = ""
+    @Published public private(set) var microphoneHelp: String = ""
 
     /// Set true when the live HID tap has delivered at least one key event.
     public private(set) var didReceiveKeyViaTap = false
 
     private var eventTapInstalledProvider: () -> Bool = { false }
+    /// Returns true only when the live hotkey backend is a HID tap (Input Monitoring).
+    private var hidBackendProvider: () -> Bool = { false }
+    private var hotkeyRetry: (() -> Void)?
+    private var didRequestListenOnLaunch = false
 
     public init(eventTapInstalledProvider: @escaping () -> Bool = { false }) {
         self.eventTapInstalledProvider = eventTapInstalledProvider
@@ -86,6 +184,15 @@ public final class PermissionsModel: ObservableObject {
         refresh()
     }
 
+    public func setHIDBackendProvider(_ provider: @escaping () -> Bool) {
+        hidBackendProvider = provider
+        refresh()
+    }
+
+    public func setHotkeyRetry(_ retry: @escaping () -> Void) {
+        hotkeyRetry = retry
+    }
+
     public func markKeyEventReceived() {
         if !didReceiveKeyViaTap {
             didReceiveKeyViaTap = true
@@ -93,26 +200,99 @@ public final class PermissionsModel: ObservableObject {
         }
     }
 
+    /// Soft TCC registration on first Setup / launch so Vocalis appears in Input Monitoring.
+    public func ensureInputMonitoringRegistered() {
+        guard !didRequestListenOnLaunch else { return }
+        guard !didReceiveKeyViaTap else { return }
+        didRequestListenOnLaunch = true
+        _ = PermissionProbe.requestInputMonitoring()
+        hotkeyRetry?()
+        refresh()
+    }
+
     public func refresh() {
+        let path = AppInstallProbe.runningAppPath
+        let others = AppInstallProbe.otherInstallPaths()
+        let addPath = AppInstallProbe.preferredManualAddPath
+        let packaged = AppInstallProbe.isPackagedApp
         let installed = eventTapInstalledProvider()
-        // Input Monitoring "Granted" only after functional proof (key via HID tap).
-        // If tap isn't installed, stay Not granted — Enable opens System Settings.
-        let inputOK = installed && didReceiveKeyViaTap
+        let hidBackend = hidBackendProvider()
+        // IM "Granted" only with HID tap + key proof — session taps work via Accessibility
+        // and must not look like Input Monitoring is granted.
+        let inputOK = hidBackend && installed && didReceiveKeyViaTap
         let next = PermissionProbe.snapshot(
             eventTapInstalled: installed,
             inputMonitoringFunctional: inputOK
         )
-        let message: String = {
-            if next.inputMonitoring { return "" }
-            if !installed {
-                return "Hotkey unavailable — enable Input Monitoring for Vocalis, then press any key."
+
+        let dupWarning: String
+        if others.isEmpty {
+            dupWarning = ""
+        } else {
+            let list = others.joined(separator: ", ")
+            dupWarning =
+                "Multiple Vocalis copies found. Using \(path). Grant Mic / Accessibility / Input Monitoring for this copy (also present: \(list)). Quit the other instance if it is running."
+        }
+
+        let tcc = PermissionProbe.listenEventTCCState()
+        let imHelp: String
+        let statusMsg: String
+        if next.inputMonitoring {
+            imHelp = ""
+            statusMsg = ""
+        } else {
+            switch tcc {
+            case .denied:
+                // Listed in System Settings but toggle Off — don't tell the user to + add.
+                imHelp =
+                    "Vocalis is already in Input Monitoring — turn its toggle On, then return here, press any key, and Refresh."
+            case .granted:
+                imHelp =
+                    "macOS shows access, but Vocalis still needs a key press through the hotkey tap. Press any key once, then Refresh."
+            case .unknown:
+                imHelp =
+                    "Open Input Monitoring. If Vocalis is listed, turn the toggle On. If it’s missing, click + and choose \(addPath), then toggle On. Return, press a key, Refresh."
             }
-            return "Tap is up — press any key once to verify Input Monitoring."
-        }()
+            if !packaged {
+                statusMsg =
+                    "Running unpackaged binary — Input Monitoring may not list it. Install Vocalis.app and relaunch."
+            } else if !installed {
+                statusMsg =
+                    "Hotkey tap not installed — turn on Accessibility, then Input Monitoring (toggle On), then Refresh."
+            } else if tcc == .denied {
+                statusMsg =
+                    "Synced: Vocalis is listed under Input Monitoring but the toggle is Off — flip it On."
+            } else if !hidBackend {
+                statusMsg =
+                    "Hotkey can work with Accessibility On. For Input Monitoring: open Settings, turn Vocalis On (or + add if missing), press a key."
+            } else {
+                statusMsg =
+                    "Waiting for a key after Input Monitoring is On — press any key, then Refresh."
+            }
+        }
+
+        let axHelp: String = next.accessibility
+            ? ""
+            : "Turn Vocalis On under Accessibility — required for the hotkey while other apps are focused."
+
+        let micHelp: String
+        if next.microphone {
+            micHelp = others.isEmpty
+                ? ""
+                : "Microphone is granted for this running copy: \(path)."
+        } else {
+            micHelp = "Grant Microphone for this running copy: \(path)."
+        }
 
         let apply = { [weak self] in
-            self?.snapshot = next
-            self?.hotkeyStatusMessage = message
+            guard let self else { return }
+            self.snapshot = next
+            self.runningAppPath = path
+            self.duplicateInstallWarning = dupWarning
+            self.inputMonitoringHelp = imHelp
+            self.accessibilityHelp = axHelp
+            self.microphoneHelp = micHelp
+            self.hotkeyStatusMessage = statusMsg
         }
         if Thread.isMainThread {
             apply()
@@ -130,34 +310,54 @@ public final class PermissionsModel: ObservableObject {
         if promptSystem {
             _ = Paster.isAccessibilityTrusted(prompt: true)
         }
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
+        openPrivacyPane(legacyQuery: "Privacy_Accessibility", modernPath: "Privacy_Accessibility")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.refresh()
         }
     }
 
     public func openInputMonitoringSettings(request: Bool = true) {
+        let tccBefore = PermissionProbe.listenEventTCCState()
         if request {
             _ = PermissionProbe.requestInputMonitoring()
+            hotkeyRetry?()
+            // Only reveal Finder when Vocalis is probably missing from the list.
+            // If TCC says Denied, it's already listed — user just needs the toggle On.
+            if tccBefore == .unknown {
+                let addURL = URL(fileURLWithPath: AppInstallProbe.preferredManualAddPath)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(addURL.path, forType: .string)
+                if FileManager.default.fileExists(atPath: addURL.path) {
+                    NSWorkspace.shared.activateFileViewerSelecting([addURL])
+                }
+            }
         }
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-            NSWorkspace.shared.open(url)
-        }
+        openPrivacyPane(legacyQuery: "Privacy_ListenEvent", modernPath: "Privacy_ListenEvent")
         // Reset functional proof so user must re-verify after changing Settings.
         didReceiveKeyViaTap = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.hotkeyRetry?()
             self?.refresh()
         }
     }
 
     public func openMicrophoneSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
-            NSWorkspace.shared.open(url)
-        }
+        openPrivacyPane(legacyQuery: "Privacy_Microphone", modernPath: "Privacy_Microphone")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.refresh()
+        }
+    }
+
+    private func openPrivacyPane(legacyQuery: String, modernPath: String) {
+        let urls = [
+            "x-apple.systempreferences:com.apple.preference.security?\(legacyQuery)",
+            "x-apple.systempreferences:com.apple.Settings.extension.PrivacySecurity?\(modernPath)",
+            "x-apple.systempreferences:com.apple.Settings.PrivacySecurity.extension?\(modernPath)",
+        ]
+        for string in urls {
+            if let url = URL(string: string), NSWorkspace.shared.open(url) {
+                return
+            }
         }
     }
 }

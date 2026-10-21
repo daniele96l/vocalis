@@ -5,7 +5,8 @@ import SwiftUI
 public enum BubbleState: Equatable, Sendable {
     case hidden
     case listening
-    case fixing
+    case transcribing
+    case polishing
     case error(String)
 }
 
@@ -17,30 +18,56 @@ public final class BubbleOverlayController {
     public init() {}
 
     public func show(_ state: BubbleState) {
-        model.state = state
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.84)) {
+            model.state = state
+            if state != .listening {
+                model.level = 0
+                model.showingQuiet = true
+            }
+        }
         ensurePanel()
         guard let panel else { return }
-        position(panel)
+        let size: NSSize = {
+            switch state {
+            case .listening: return NSSize(width: 292, height: 86)
+            default: return NSSize(width: 228, height: 52)
+            }
+        }()
+        var frame = panel.frame
+        frame.size = size
+        panel.setFrame(frame, display: false)
+        // Fixed bottom-center — never follows the cursor.
+        positionBottomCenter(panel)
         if !panel.isVisible {
             panel.orderFrontRegardless()
         }
-        // Grow slightly for animated content
-        let size = NSSize(width: 260, height: 64)
-        var frame = panel.frame
-        frame.size = size
-        panel.setFrame(frame, display: true)
-        panel.contentView?.needsDisplay = true
+    }
+
+    public func updateMeter(level: Float, micName: String) {
+        model.level = level
+        if model.micName != micName {
+            model.micName = micName
+        }
+        if model.showingQuiet {
+            if level >= 0.03 { model.showingQuiet = false }
+        } else if level < 0.008 {
+            model.showingQuiet = true
+        }
     }
 
     public func hide() {
-        model.state = .hidden
+        withAnimation(.easeOut(duration: 0.18)) {
+            model.state = .hidden
+            model.level = 0
+            model.showingQuiet = true
+        }
         panel?.orderOut(nil)
     }
 
     private func ensurePanel() {
         if panel != nil { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 64),
+            contentRect: NSRect(x: 0, y: 0, width: 292, height: 86),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -60,23 +87,20 @@ public final class BubbleOverlayController {
         self.panel = panel
     }
 
-    private func position(_ panel: NSPanel) {
+    /// Centered horizontally, just above the Dock / screen bottom edge.
+    private func positionBottomCenter(_ panel: NSPanel) {
         let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
+        let visible = screen.visibleFrame
         let size = panel.frame.size
-        var origin = NSPoint(x: mouse.x - size.width / 2, y: mouse.y + 24)
-        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
-            let visible = screen.visibleFrame
-            if origin.y + size.height > visible.maxY {
-                origin.y = mouse.y - size.height - 24
-            }
-            origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
-            if origin.y < visible.minY + 8 {
-                origin = NSPoint(
-                    x: visible.midX - size.width / 2,
-                    y: visible.minY + 48
-                )
-            }
-        }
+        let margin: CGFloat = 28
+        let origin = NSPoint(
+            x: visible.midX - size.width / 2,
+            y: visible.minY + margin
+        )
         panel.setFrameOrigin(origin)
     }
 }
@@ -84,10 +108,15 @@ public final class BubbleOverlayController {
 @MainActor
 final class BubbleModel: ObservableObject {
     @Published var state: BubbleState = .hidden
+    @Published var level: Float = 0
+    @Published var micName: String = "Microphone"
+    /// Hysteresis so the label does not flicker Listening ↔ quiet on soft speech.
+    var showingQuiet = true
 }
 
 struct BubbleView: View {
     @ObservedObject var model: BubbleModel
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Group {
@@ -95,103 +124,113 @@ struct BubbleView: View {
             case .hidden:
                 Color.clear.frame(width: 1, height: 1)
             case .listening:
-                pill(label: "Listening…", kind: .listening)
-            case .fixing:
-                pill(label: "Cleaning…", kind: .fixing)
+                listeningCard
+                    .transition(.asymmetric(
+                        insertion: .scale(scale: 0.94).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+            case .transcribing:
+                simpleCard(title: "Transcribing…", spinning: true)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            case .polishing:
+                simpleCard(title: "Polishing…", spinning: true)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
             case .error(let message):
-                pill(label: message, kind: .error)
+                simpleCard(title: message, spinning: false)
+                    .transition(.opacity)
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.state)
+        .animation(.spring(response: 0.36, dampingFraction: 0.86), value: model.state)
     }
 
-    private enum Kind { case listening, fixing, error }
-
-    private func pill(label: String, kind: Kind) -> some View {
-        HStack(spacing: 12) {
-            switch kind {
-            case .listening:
-                BreathingOrb()
-                    .frame(width: 22, height: 22)
-            case .fixing:
-                CleaningDots()
-                    .frame(width: 28, height: 14)
-            case .error:
-                ErrorGlyph()
+    private var listeningCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                LiveWaveform(level: model.level, barCount: 12)
+                    .frame(width: 96, height: 22)
+                HStack(spacing: 0) {
+                    Text("Listening")
+                        .font(.system(size: 13, weight: .medium))
+                    if model.showingQuiet {
+                        Text(" · quiet")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
             }
-
-            Text(label)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.primary)
+            Text(model.micName)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-                )
-        )
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 5)
-        .padding(4)
-        .transition(.scale(scale: 0.92).combined(with: .opacity))
+        .frame(width: 280, alignment: .leading)
+        .background(cardBackground)
     }
-}
 
-/// Soft breathing orb while recording — calm pulse, no frantic bars.
-struct BreathingOrb: View {
-    @State private var breathe = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color.red.opacity(0.18))
-                .scaleEffect(breathe ? 1.35 : 0.9)
-            Circle()
-                .fill(Color.red.opacity(0.85))
-                .frame(width: 10, height: 10)
-                .scaleEffect(breathe ? 1.08 : 0.92)
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) {
-                breathe = true
+    private func simpleCard(title: String, spinning: Bool) -> some View {
+        HStack(spacing: 10) {
+            if spinning {
+                SoftSpinner()
+                    .frame(width: 14, height: 14)
             }
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(cardBackground)
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(scheme == .dark ? Color(white: 0.14) : Color.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.10), radius: 16, y: 6)
     }
 }
 
-/// Gentle shimmering dots while Whisper + cleanup run.
-struct CleaningDots: View {
+/// Always-wiggling bars: idle motion + mic level. Monochrome, Notion-quiet.
+struct LiveWaveform: View {
+    var level: Float
+    var barCount: Int = 12
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.28, paused: false)) { context in
-            let phase = Int(context.date.timeIntervalSinceReferenceDate / 0.28) % 3
-            HStack(spacing: 4) {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle()
-                        .fill(Color.primary.opacity(0.55))
-                        .frame(width: 5, height: 5)
-                        .offset(y: phase == i ? -3 : 0)
-                        .opacity(phase == i ? 1 : 0.35)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 2.5) {
+                ForEach(0..<barCount, id: \.self) { i in
+                    let phase = Double(i) * 0.55
+                    let wiggle = 0.35 + 0.65 * abs(sin(t * 4.2 + phase))
+                    let energy = Double(max(0.08, min(1, level)))
+                    let quietFloor = 0.22 + 0.12 * abs(sin(t * 2.1 + phase * 0.7))
+                    let amp = quietFloor + (1.0 - quietFloor) * energy * wiggle
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.22 + 0.78 * energy))
+                        .frame(width: 4, height: max(4, 22 * amp))
                 }
             }
-            .animation(.easeInOut(duration: 0.2), value: phase)
+            .frame(maxHeight: 22)
         }
     }
 }
 
-struct ErrorGlyph: View {
-    @State private var dim = false
+struct SoftSpinner: View {
+    @State private var spin = false
 
     var body: some View {
-        Image(systemName: "exclamationmark.circle.fill")
-            .foregroundStyle(.orange)
-            .opacity(dim ? 0.45 : 1)
+        Circle()
+            .trim(from: 0.12, to: 0.88)
+            .stroke(Color.primary.opacity(0.55), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .rotationEffect(.degrees(spin ? 360 : 0))
             .onAppear {
-                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                    dim = true
+                withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+                    spin = true
                 }
             }
     }

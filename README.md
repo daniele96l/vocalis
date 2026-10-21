@@ -11,12 +11,16 @@ Get the app from the latest release:
 1. Download **Vocalis.dmg** (or `Vocalis.app.zip`).
 2. Open it → drag **Vocalis** into **Applications**.
 3. First launch: right-click → **Open** once if macOS Gatekeeper warns (ad-hoc signed, not notarized).
-4. Grant **Microphone** + **Accessibility** (+ **Input Monitoring** if the hotkey does nothing).
+4. Grant **Microphone**, **Accessibility**, and **Input Monitoring**.
+   - Accessibility: find Vocalis in the list and turn the toggle **On**.
+   - Input Monitoring: if Vocalis is missing, click **+** and choose the installed `Vocalis.app`, then toggle **On**. Press any key once in Setup to verify.
 5. Paste an OpenAI API key in **Settings** (menubar → Open Vocalis).
 
 Hold **Right Option** to dictate; release to clean up and paste.
 
-Direct file: [Vocalis.dmg](https://github.com/daniele96l/vocalis/releases/download/v0.1.0/Vocalis.dmg)
+Prefer a single install (`~/Applications` via `./Installer/install.sh`, or `/Applications` via the DMG). Multiple copies confuse Microphone / TCC grants.
+
+Direct file: [Vocalis.dmg](https://github.com/daniele96l/vocalis/releases/download/v0.1.1/Vocalis.dmg)
 
 ## Install on this Mac (developer)
 

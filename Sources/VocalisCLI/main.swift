@@ -175,24 +175,28 @@ enum VocalisCLI {
 
     static func appCandidates() -> [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        var paths = [
-            "/Applications/Vocalis.app",
-            "\(home)/Applications/Vocalis.app",
-            "\(home)/Developer/vocalis/.build/Vocalis.app",
-            "\(home)/Developer/vocalis/.build/release/Vocalis",
-            "\(home)/Developer/vocalis/.build/debug/Vocalis",
-        ]
-        // Relative to this binary (when installed as ~/.local/bin/vocalis sibling to app)
+        // Prefer packaged .app only — raw binaries do not register cleanly in
+        // System Settings → Input Monitoring / Accessibility / Microphone.
+        var paths: [String] = []
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let binDir = exe.deletingLastPathComponent()
-        paths.insert(binDir.appendingPathComponent("Vocalis.app").path, at: 0)
-        paths.insert(binDir.deletingLastPathComponent().appendingPathComponent("Vocalis.app").path, at: 1)
-        // Also try swift build products next to package
-        if let cwd = FileManager.default.currentDirectoryPath as String? {
-            paths.append("\(cwd)/.build/Vocalis.app")
-            paths.append("\(cwd)/.build/release/Vocalis")
-            paths.append("\(cwd)/.build/debug/Vocalis")
+        // install.sh links ~/.local/bin/Vocalis.app → ~/Applications/Vocalis.app
+        paths.append(binDir.appendingPathComponent("Vocalis.app").path)
+        paths.append("\(home)/Applications/Vocalis.app")
+        paths.append("/Applications/Vocalis.app")
+        paths.append(binDir.deletingLastPathComponent().appendingPathComponent("Vocalis.app").path)
+        paths.append("\(home)/Developer/vocalis/.build/Vocalis.app")
+        paths.append("\(FileManager.default.currentDirectoryPath)/.build/Vocalis.app")
+
+        // De-dupe while preserving order
+        var seen = Set<String>()
+        var unique: [String] = []
+        for path in paths {
+            let standardized = (path as NSString).standardizingPath
+            guard !seen.contains(standardized) else { continue }
+            seen.insert(standardized)
+            unique.append(standardized)
         }
-        return paths
+        return unique
     }
 }
