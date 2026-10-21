@@ -220,12 +220,24 @@ public final class DictationController {
                 let client = OpenAIClient(config: config)
                 let transcriptText: String
                 if let live {
+                    // Keep a copy for one-shot fallback if live chunks all come back empty
+                    // (e.g. license proxy briefly failed while the meter still looked fine).
+                    let fallbackURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("vocalis-fallback-\(UUID().uuidString).wav")
+                    try? FileManager.default.copyItem(at: audioURL, to: fallbackURL)
+                    defer { try? FileManager.default.removeItem(at: fallbackURL) }
+
                     // LiveTranscriber owns deletion of each chunk URL (including this final one).
                     live.submit(url: audioURL)
-                    transcriptText = try await live.finishJoined()
-                    if transcriptText.isEmpty {
+                    var joined = try await live.finishJoined()
+                    if joined.isEmpty {
+                        NSLog("Vocalis: live STT empty — retrying one-shot transcription")
+                        joined = try await client.transcribe(audioURL: fallbackURL).text
+                    }
+                    if joined.isEmpty {
                         throw OpenAIClientError.emptyTranscript
                     }
+                    transcriptText = joined
                 } else {
                     defer { try? FileManager.default.removeItem(at: audioURL) }
                     transcriptText = try await client.transcribe(audioURL: audioURL).text

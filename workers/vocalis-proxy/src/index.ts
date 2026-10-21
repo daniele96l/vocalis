@@ -96,22 +96,36 @@ async function proxy(request: Request, upstream: string, apiKey: string): Promis
     return jsonError(500, "Upstream API key not configured on proxy");
   }
 
-  const headers = new Headers(request.headers);
-  headers.set("Authorization", `Bearer ${apiKey}`);
-  headers.delete("Host");
+  // Buffer the body. Streaming/duplex multipart from macOS → Worker → OpenAI/xAI
+  // often arrives upstream with an empty file, which STT returns as blank text
+  // ("Empty audio" in Vocalis) even though the listening waveform looked fine.
+  const body = await request.arrayBuffer();
+  if (body.byteLength === 0) {
+    return jsonError(400, "Empty upload body");
+  }
 
-  const init: RequestInit = {
+  const headers = new Headers();
+  const contentType = request.headers.get("Content-Type");
+  if (contentType) headers.set("Content-Type", contentType);
+  headers.set("Authorization", `Bearer ${apiKey}`);
+  headers.set("Content-Length", String(body.byteLength));
+
+  console.log(
+    JSON.stringify({
+      event: "proxy_forward",
+      upstream,
+      bytes: body.byteLength,
+      contentType: contentType ?? null,
+    })
+  );
+
+  const upstreamResponse = await fetch(upstream, {
     method: "POST",
     headers,
-    // Stream body through — do not buffer audio uploads.
-    body: request.body,
+    body,
     redirect: "follow",
-  };
+  });
 
-  // Cloudflare requires duplex when streaming a request body.
-  (init as RequestInit & { duplex?: string }).duplex = "half";
-
-  const upstreamResponse = await fetch(upstream, init);
   const out = new Response(upstreamResponse.body, {
     status: upstreamResponse.status,
     statusText: upstreamResponse.statusText,

@@ -12,8 +12,8 @@ public enum OpenAIClientError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .missingKey: return "Bad key or license"
-        case .emptyAudio: return "Empty audio"
-        case .emptyTranscript: return "Empty audio"
+        case .emptyAudio: return "Empty recording"
+        case .emptyTranscript: return "No speech found"
         case .http(let code, _):
             if code == 401 || code == 403 { return "Bad key or license" }
             return "API \(code)"
