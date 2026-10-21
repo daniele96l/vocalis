@@ -710,6 +710,7 @@ struct SettingsView: View {
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
     @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
+    @State private var selectedLanguages: Set<String> = Set(VocalisConfig.load().languages)
 
     private var keyConfigured: Bool { config.hasAPIKey }
 
@@ -790,6 +791,36 @@ struct SettingsView: View {
                             micDevices = MicDevices.listInputs()
                         }
                         .buttonStyle(QuietButtonStyle())
+                    }
+                }
+
+                sectionLabel("Languages")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Languages you usually speak. Default is English + Italian so the model doesn’t jump to something else. Select one to pin hard; select several to allow switching among those only.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Text(LanguageCatalog.displayNames(for: Array(selectedLanguages)))
+                            .font(.system(size: 13, weight: .medium))
+
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: 8),
+                                GridItem(.flexible(), spacing: 8),
+                            ],
+                            spacing: 6
+                        ) {
+                            ForEach(LanguageCatalog.choices) { lang in
+                                Toggle(isOn: languageBinding(lang.code)) {
+                                    Text(lang.name)
+                                        .font(VocalisTheme.body)
+                                        .lineLimit(1)
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                        }
                     }
                 }
 
@@ -940,6 +971,7 @@ struct SettingsView: View {
                 ? config.cleanupModel
                 : ModelCatalog.cleanupOff
             streamingSTT = config.streamingSTT
+            selectedLanguages = Set(config.languages)
             micDevices = MicDevices.listInputs()
             state.refresh(
                 permissions: nil,
@@ -949,6 +981,36 @@ struct SettingsView: View {
             )
         }
         .onDisappear { stopRecording(cancelled: true) }
+    }
+
+    private func languageBinding(_ code: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedLanguages.contains(code) },
+            set: { enabled in
+                if enabled {
+                    selectedLanguages.insert(code)
+                } else {
+                    // Keep at least one language selected.
+                    guard selectedLanguages.count > 1 else { return }
+                    selectedLanguages.remove(code)
+                }
+                saveLanguages()
+            }
+        )
+    }
+
+    private func saveLanguages() {
+        do {
+            var next = VocalisConfig.load()
+            next.languages = LanguageCatalog.normalize(Array(selectedLanguages))
+            try next.save()
+            config = next
+            selectedLanguages = Set(next.languages)
+            onModelsChanged()
+            state.statusMessage = "Languages: \(LanguageCatalog.displayNames(for: next.languages))"
+        } catch {
+            state.statusMessage = "Could not save languages."
+        }
     }
 
     private func saveSTT(_ model: String) {

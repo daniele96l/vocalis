@@ -10,6 +10,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public var inputDeviceID: String
     /// Transcribe ~5s chunks while holding so long dictations finish faster on release.
     public var streamingSTT: Bool
+    /// Preferred spoken languages (ISO-639-1). Default English + Italian.
+    public var languages: [String]
 
     public static let defaultBaseURL = "https://api.openai.com/v1"
     /// Cheapest widely available file STT; override in Settings anytime.
@@ -17,6 +19,7 @@ public struct VocalisConfig: Equatable, Sendable {
     public static let defaultCleanupModel = "gpt-4o-mini"
     public static let defaultHotkey = "rightOption"
     public static let defaultStreamingSTT = true
+    public static let defaultLanguages: [String] = LanguageCatalog.defaultCodes
 
     public static var configDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -44,7 +47,8 @@ public struct VocalisConfig: Equatable, Sendable {
         cleanupModel: String = defaultCleanupModel,
         hotkey: String = defaultHotkey,
         inputDeviceID: String = "",
-        streamingSTT: Bool = defaultStreamingSTT
+        streamingSTT: Bool = defaultStreamingSTT,
+        languages: [String] = defaultLanguages
     ) {
         self.openaiAPIKey = openaiAPIKey
         self.baseURL = baseURL
@@ -53,6 +57,7 @@ public struct VocalisConfig: Equatable, Sendable {
         self.hotkey = hotkey
         self.inputDeviceID = inputDeviceID
         self.streamingSTT = streamingSTT
+        self.languages = LanguageCatalog.normalize(languages)
     }
 
     /// Env `OPENAI_API_KEY` (or `AI_GATEWAY_API_KEY`) wins over file key.
@@ -90,6 +95,7 @@ public struct VocalisConfig: Equatable, Sendable {
         hotkey = "\(hotkey)"
         input_device_id = "\(inputDeviceID)"
         streaming_stt = "\(streamingSTT)"
+        languages = "\(LanguageCatalog.normalize(languages).joined(separator: ","))"
         """
         try body.write(to: Self.configFileURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.configFileURL.path)
@@ -121,6 +127,11 @@ public struct VocalisConfig: Equatable, Sendable {
             case "streaming_stt":
                 let v = value.lowercased()
                 config.streamingSTT = !(v == "false" || v == "0" || v == "no" || v == "off")
+            case "languages":
+                let parts = value
+                    .split(whereSeparator: { $0 == "," || $0 == " " || $0 == ";" })
+                    .map(String.init)
+                config.languages = LanguageCatalog.normalize(parts)
             default: break
             }
         }

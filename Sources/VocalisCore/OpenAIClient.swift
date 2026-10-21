@@ -36,15 +36,17 @@ public struct CleanupResult: Sendable {
 }
 
 public final class OpenAIClient: Sendable {
-    public static let cleanupSystemPrompt =
-        "Fix typos, punctuation, casing. Keep meaning/language. Output only cleaned text."
-
     private let config: VocalisConfig
     private let session: URLSession
 
     public init(config: VocalisConfig, session: URLSession = .shared) {
         self.config = config
         self.session = session
+    }
+
+    private var cleanupSystemPrompt: String {
+        let langs = LanguageCatalog.displayNames(for: config.languages)
+        return "Fix typos, punctuation, casing. Keep meaning. Preferred languages: \(langs). Do not translate. Output only cleaned text."
     }
 
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
@@ -56,6 +58,7 @@ public final class OpenAIClient: Sendable {
         if size < 200 { throw OpenAIClientError.emptyAudio }
 
         let localDuration = Self.audioDurationSeconds(url: audioURL)
+        let languages = LanguageCatalog.normalize(config.languages)
 
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
@@ -72,6 +75,18 @@ public final class OpenAIClient: Sendable {
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
         append("\(responseFormat)\r\n")
+
+        // Single preferred language → hard language pin. Multiple → prompt-only (API takes one code).
+        if languages.count == 1, let only = languages.first {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("\(only)\r\n")
+        }
+
+        let prompt = LanguageCatalog.transcriptionPrompt(for: languages)
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+        append("\(prompt)\r\n")
 
         let filename = audioURL.pathExtension.isEmpty ? "audio.wav" : "audio.\(audioURL.pathExtension)"
         let mime = audioURL.pathExtension.lowercased() == "wav" ? "audio/wav" : "audio/m4a"
@@ -136,7 +151,7 @@ public final class OpenAIClient: Sendable {
             "temperature": 0,
             "max_tokens": min(400, max(64, text.count / 2 + 32)),
             "messages": [
-                ["role": "system", "content": Self.cleanupSystemPrompt],
+                ["role": "system", "content": cleanupSystemPrompt],
                 ["role": "user", "content": text],
             ],
         ]
@@ -170,7 +185,7 @@ public final class OpenAIClient: Sendable {
             let usage = json["usage"] as? [String: Any]
             let promptTokens = (usage?["prompt_tokens"] as? Int)
                 ?? (usage?["prompt_tokens"] as? NSNumber)?.intValue
-                ?? Self.estimateTokens(Self.cleanupSystemPrompt) + Self.estimateTokens(text)
+                ?? Self.estimateTokens(cleanupSystemPrompt) + Self.estimateTokens(text)
             let completionTokens = (usage?["completion_tokens"] as? Int)
                 ?? (usage?["completion_tokens"] as? NSNumber)?.intValue
                 ?? Self.estimateTokens(finalText)

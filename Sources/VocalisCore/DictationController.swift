@@ -72,6 +72,11 @@ public final class DictationController {
         try config.save()
     }
 
+    public func setLanguages(_ codes: [String]) throws {
+        config.languages = LanguageCatalog.normalize(codes)
+        try config.save()
+    }
+
     private func applyBinding(_ binding: HotkeyBinding) {
         hotkey.updateBinding(binding)
     }
