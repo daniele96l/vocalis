@@ -2,6 +2,8 @@
 .build/
 .swiftpm/
 dist/
+Resources/AppIcon.iconset/
+Resources/AppIcon-1024.png
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/

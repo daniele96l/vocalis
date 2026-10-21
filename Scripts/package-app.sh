@@ -19,6 +19,15 @@ cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 cp "$BIN_DIR/Vocalis" "$MACOS/Vocalis"
 chmod +x "$MACOS/Vocalis"
 
+# App icon
+if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
+  cp "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
+elif [[ -f "$ROOT/Resources/AppIcon-source.png" ]]; then
+  # Regenerate icns if missing
+  "$ROOT/Scripts/build-app-icon.sh"
+  cp "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
+fi
+
 # Ad-hoc sign so TCC prompts (mic / accessibility) can bind to the bundle id
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
 

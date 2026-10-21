@@ -38,11 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             if let button = item.button {
-                button.image = NSImage(
-                    systemSymbolName: "waveform.circle.fill",
-                    accessibilityDescription: "Vocalis"
-                )
-                button.image?.isTemplate = true
+                if let icon = Self.menubarIcon() {
+                    button.image = icon
+                } else {
+                    button.image = NSImage(
+                        systemSymbolName: "waveform.circle.fill",
+                        accessibilityDescription: "Vocalis"
+                    )
+                    button.image?.isTemplate = true
+                }
             }
             statusItem = item
             rebuildMenu()
@@ -89,6 +93,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tapError: c?.hotkeyStartError
         )
         rebuildMenu()
+    }
+
+    private static func menubarIcon() -> NSImage? {
+        let candidates: [URL?] = [
+            Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+            Bundle.main.resourceURL?.appendingPathComponent("AppIcon.icns"),
+            // When launched as .app/Contents/MacOS/Vocalis
+            Bundle.main.bundleURL
+                .deletingLastPathComponent() // MacOS
+                .appendingPathComponent("Resources/AppIcon.icns"),
+        ]
+        for case let url? in candidates {
+            if let img = NSImage(contentsOf: url) {
+                let sized = NSImage(size: NSSize(width: 18, height: 18))
+                sized.lockFocus()
+                img.draw(
+                    in: NSRect(x: 0, y: 0, width: 18, height: 18),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1
+                )
+                sized.unlockFocus()
+                sized.isTemplate = false
+                return sized
+            }
+        }
+        return nil
     }
 
     private func rebuildMenu() {
