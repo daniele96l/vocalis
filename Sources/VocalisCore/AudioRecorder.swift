@@ -37,37 +37,69 @@ public final class AudioRecorder: NSObject {
     private var usingAudioQueue = false
     private var bufferCount: Int = 0
     private var writeGain: Float = 1
+    /// Keep AirPods HFP warm across dictations so the next hold starts instantly.
+    private var keepBluetoothWarm = true
 
     public var isRecording: Bool {
         if usingAudioQueue { return audioQueue != nil }
         return engine?.isRunning == true
     }
 
+    /// Fast path when already authorized — avoids TCC round-trip on every hold.
+    public var hasMicPermission: Bool {
+        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
     public func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
+        if hasMicPermission { return true }
+        return await withCheckedContinuation { continuation in
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 continuation.resume(returning: granted)
             }
         }
     }
 
+    /// Call at launch / mic change so the first hold does not pay HFP switch cost.
+    public func prewarm() {
+        let device = MicDevices.device(uid: preferredDeviceUID)
+        guard device?.isBluetooth == true else { return }
+        let activation = MicDevices.activateInput(uid: preferredDeviceUID)
+        if previousOutputUID == nil {
+            previousOutputUID = activation.previousOutputUID
+        }
+        isBluetoothSession = true
+        keepBluetoothWarm = true
+        NSLog("Vocalis: prewarmed Bluetooth route for \(MicDevices.displayName(forUID: preferredDeviceUID))")
+    }
+
     public func start() async throws {
-        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+        if !hasMicPermission {
             throw AudioRecorderError.permissionDenied
         }
-        cancel()
+        // Tear down capture only — keep BT route warm so we do not miss first words.
+        tearDownCapture(deleteFile: true)
+        outputURL = nil
+        latestLevel = 0
 
         let device = MicDevices.device(uid: preferredDeviceUID)
+        let alreadyWarm = device?.isBluetooth == true
+            && MicDevices.isBluetoothRouteWarm(uid: preferredDeviceUID)
         let activation = MicDevices.activateInput(uid: preferredDeviceUID)
-        previousOutputUID = activation.previousOutputUID
+        if previousOutputUID == nil {
+            previousOutputUID = activation.previousOutputUID
+        }
         isBluetoothSession = device?.isBluetooth == true
+        keepBluetoothWarm = true
         activeDeviceName = MicDevices.displayName(forUID: preferredDeviceUID)
         writeGain = isBluetoothSession ? 6.0 : 1.0
         bufferCount = 0
-        latestLevel = 0
+
+        // Only wait when we actually flipped the route into HFP; warm path starts now.
+        if isBluetoothSession, activation.routeChanged, !alreadyWarm {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+        }
 
         if isBluetoothSession {
-            try? await Task.sleep(nanoseconds: 600_000_000)
             try startAudioQueue(device: device)
         } else {
             try startEngine(device: device)
@@ -80,12 +112,23 @@ public final class AudioRecorder: NSObject {
         let url = outputURL
         self.outputURL = nil
         latestLevel = 0
-        finishBluetoothRoute()
+        // Do not restore speakers here — keeps AirPods ready for the next hold.
         NSLog("Vocalis: stopped after \(bufferCount) buffers")
         return url
     }
 
     public func cancel() {
+        tearDownCapture(deleteFile: true)
+        outputURL = nil
+        latestLevel = 0
+        if !keepBluetoothWarm {
+            finishBluetoothRoute()
+        }
+    }
+
+    /// Restore previous output (call on app quit).
+    public func releaseHardware() {
+        keepBluetoothWarm = false
         tearDownCapture(deleteFile: true)
         outputURL = nil
         latestLevel = 0

@@ -104,27 +104,42 @@ public enum MicDevices {
     /// Activate the chosen input. For Bluetooth (AirPods), also route default *output*
     /// to the same device so macOS switches into headset/HFP mode — otherwise the
     /// mic often stays silent while A2DP playback is active.
+    ///
+    /// `routeChanged` is false when input (and BT output) were already correct — callers
+    /// should skip settle delays in that case.
     @discardableResult
-    public static func activateInput(uid: String) -> (ok: Bool, previousOutputUID: String?) {
+    public static func activateInput(uid: String) -> (ok: Bool, previousOutputUID: String?, routeChanged: Bool) {
         let target = device(uid: uid)
-        guard let target else { return (true, nil) }
+        guard let target else { return (true, nil, false) }
+
+        var routeChanged = false
+        if let currentIn = defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice),
+           currentIn != target.coreAudioID {
+            routeChanged = true
+        } else if defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice) == nil {
+            routeChanged = true
+        }
 
         let okIn = setDefaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice, id: target.coreAudioID)
         var previousOutUID: String?
 
         if target.isBluetooth {
-            if let currentOut = defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice) {
+            let currentOut = defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+            if let currentOut {
                 previousOutUID = stringProperty(currentOut, kAudioDevicePropertyDeviceUID)
             }
             // Prefer matching AirPods output endpoint if this UID is input-only.
             let outID = matchingOutputDeviceID(forInput: target) ?? target.coreAudioID
-            _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: outID)
+            if currentOut != outID {
+                routeChanged = true
+                _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: outID)
+            }
         }
 
         if !okIn {
             NSLog("Vocalis: failed to set input device \(target.uid)")
         }
-        return (okIn, previousOutUID)
+        return (okIn, previousOutUID, routeChanged)
     }
 
     public static func restoreDefaultOutput(uid: String?) {
@@ -138,6 +153,16 @@ public enum MicDevices {
     @discardableResult
     public static func setDefaultInput(uid: String) -> Bool {
         activateInput(uid: uid).ok
+    }
+
+    /// True when the preferred (or system default) input is already Bluetooth HFP-ready
+    /// (matching output also on that headset).
+    public static func isBluetoothRouteWarm(uid: String) -> Bool {
+        guard let target = device(uid: uid), target.isBluetooth else { return false }
+        guard let currentIn = defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice),
+              currentIn == target.coreAudioID else { return false }
+        let outID = matchingOutputDeviceID(forInput: target) ?? target.coreAudioID
+        return defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice) == outID
     }
 
     // MARK: - Private

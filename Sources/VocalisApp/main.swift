@@ -184,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             } else if CommandLine.arguments.contains("--demo-fixing") {
                 openMain(tab: .home)
-                controller.bubble.show(.fixing)
+                controller.bubble.show(.transcribing)
             } else {
                 openPreferredTab()
             }
@@ -800,7 +800,7 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Transcription is the expensive part (per minute of audio). Cleanup is a tiny chat call — usually fractions of a cent. Turn cleanup Off to save that second call.")
+                        Text("Transcription is the expensive (and usually slowest) step. Cleanup adds a second API call — turn it Off for the snappiest paste, or keep gpt-4o-mini (auto-skips when the transcript already looks clean, times out to raw after 2.5s).")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

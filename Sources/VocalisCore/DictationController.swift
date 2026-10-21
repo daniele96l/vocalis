@@ -7,8 +7,10 @@ public final class DictationController {
     public private(set) var config: VocalisConfig
     public private(set) var hotkey: HotkeyMonitor
     private var processing = false
+    private var starting = false
     private var errorHideTask: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
+    private var holdTask: Task<Void, Never>?
 
     public var isHotkeyTapInstalled: Bool { hotkey.isTapInstalled }
     public var hotkeyStartError: String? { hotkey.lastStartError }
@@ -35,6 +37,7 @@ public final class DictationController {
         config = .load()
         recorder.preferredDeviceUID = config.inputDeviceID
         applyBinding(HotkeyBinding.parse(config.hotkey))
+        recorder.prewarm()
     }
 
     public func setHotkey(_ binding: HotkeyBinding) throws {
@@ -48,6 +51,7 @@ public final class DictationController {
         try config.save()
         recorder.preferredDeviceUID = uid
         _ = MicDevices.setDefaultInput(uid: uid)
+        recorder.prewarm()
     }
 
     public func setSTTModel(_ model: String) throws {
@@ -68,46 +72,77 @@ public final class DictationController {
 
     public func start() {
         hotkey.start()
+        recorder.prewarm()
     }
 
     public func stop() {
+        holdTask?.cancel()
+        holdTask = nil
+        starting = false
         stopMeter()
         hotkey.stop()
-        recorder.cancel()
+        recorder.releaseHardware()
         bubble.hide()
     }
 
     private func beginHold() {
         guard !processing else { return }
         errorHideTask?.cancel()
-        Task {
-            let granted = await recorder.requestPermission()
-            guard granted else {
-                showError("No mic")
-                return
+        holdTask?.cancel()
+
+        // Show UI immediately — before any await — so hold feels instant.
+        bubble.show(.listening)
+        bubble.updateMeter(
+            level: 0,
+            micName: MicDevices.displayName(forUID: config.inputDeviceID)
+        )
+        starting = true
+        recorder.preferredDeviceUID = config.inputDeviceID
+
+        holdTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.starting = false }
+
+            if !self.recorder.hasMicPermission {
+                let granted = await self.recorder.requestPermission()
+                guard granted else {
+                    self.showError("No mic")
+                    return
+                }
             }
+            guard !Task.isCancelled else { return }
+
             do {
-                recorder.preferredDeviceUID = config.inputDeviceID
-                // Show bubble immediately so AirPods settle delay still feels responsive.
-                bubble.show(.listening)
-                bubble.updateMeter(
-                    level: 0,
-                    micName: MicDevices.displayName(forUID: config.inputDeviceID)
-                )
-                try await recorder.start()
-                bubble.updateMeter(level: 0, micName: recorder.activeDeviceName)
-                startMeter()
+                try await self.recorder.start()
+                guard !Task.isCancelled else {
+                    self.recorder.cancel()
+                    return
+                }
+                self.bubble.updateMeter(level: 0, micName: self.recorder.activeDeviceName)
+                self.startMeter()
             } catch {
-                showError(shortError(error))
+                guard !Task.isCancelled else { return }
+                self.showError(self.shortError(error))
             }
         }
     }
 
     private func endHold() {
         stopMeter()
-        guard recorder.isRecording else { return }
+        holdTask?.cancel()
+        holdTask = nil
+
+        // If release happened before start finished, abort quietly.
+        guard recorder.isRecording else {
+            starting = false
+            if !processing {
+                bubble.hide()
+            }
+            return
+        }
+
         processing = true
-        bubble.show(.fixing)
+        bubble.show(.transcribing)
 
         Task {
             defer { processing = false }
@@ -124,12 +159,13 @@ public final class DictationController {
                 let transcript = try await client.transcribe(audioURL: audioURL)
                 let text: String
                 if ModelCatalog.isCleanupEnabled(config.cleanupModel) {
+                    bubble.show(.polishing)
                     text = try await client.cleanup(text: transcript.text).text
                 } else {
                     text = transcript.text
                 }
                 try Paster.paste(text)
-                try? await Task.sleep(nanoseconds: 180_000_000)
+                try? await Task.sleep(nanoseconds: 120_000_000)
                 bubble.hide()
             } catch {
                 showError(shortError(error))

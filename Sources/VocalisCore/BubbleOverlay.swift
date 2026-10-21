@@ -5,7 +5,8 @@ import SwiftUI
 public enum BubbleState: Equatable, Sendable {
     case hidden
     case listening
-    case fixing
+    case transcribing
+    case polishing
     case error(String)
 }
 
@@ -27,9 +28,12 @@ public final class BubbleOverlayController {
         if !panel.isVisible {
             panel.orderFrontRegardless()
         }
-        let size: NSSize = state == .listening
-            ? NSSize(width: 280, height: 78)
-            : NSSize(width: 220, height: 48)
+        let size: NSSize = {
+            switch state {
+            case .listening: return NSSize(width: 280, height: 78)
+            default: return NSSize(width: 220, height: 48)
+            }
+        }()
         var frame = panel.frame
         frame.size = size
         panel.setFrame(frame, display: true)
@@ -108,8 +112,10 @@ struct BubbleView: View {
                 Color.clear.frame(width: 1, height: 1)
             case .listening:
                 listeningCard
-            case .fixing:
-                simpleCard(title: "Cleaning…")
+            case .transcribing:
+                simpleCard(title: "Transcribing…")
+            case .polishing:
+                simpleCard(title: "Polishing…")
             case .error(let message):
                 simpleCard(title: message)
             }
