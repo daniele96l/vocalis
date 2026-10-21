@@ -145,3 +145,71 @@ public enum ModelCatalog {
         return !(v.isEmpty || v == cleanupOff || v == "none" || v == "false")
     }
 }
+
+/// How aggressively the cleanup model rewrites the transcript.
+public enum CleanupStyle: String, CaseIterable, Identifiable, Equatable, Sendable {
+    /// Typos / punctuation / casing only (current default).
+    case light = "light"
+    /// Also repair obvious STT mishearings from context.
+    case fix = "fix"
+    /// Structure the message (lists, parentheses, clear paragraphs).
+    case shape = "shape"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .light: return "Light"
+        case .fix: return "Fix words"
+        case .shape: return "Shape"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .light:
+            return "Typos, punctuation, casing — keep wording"
+        case .fix:
+            return "Also replace nonsense / misheard words from context"
+        case .shape:
+            return "Lists, brackets, structure — as if you typed carefully"
+        }
+    }
+
+    public static let `default`: CleanupStyle = .light
+
+    public static func parse(_ raw: String) -> CleanupStyle {
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return CleanupStyle(rawValue: v) ?? .default
+    }
+
+    public func systemPrompt(preferredLanguages: String) -> String {
+        let langs = preferredLanguages
+        switch self {
+        case .light:
+            return """
+            Fix typos, punctuation, and casing only. Keep the speaker’s words and meaning. \
+            Preferred languages: \(langs). Do not translate. Do not add structure (no bullet lists). \
+            Output only the cleaned text.
+            """
+        case .fix:
+            return """
+            Clean the transcript: fix typos, punctuation, and casing. \
+            Also repair obvious speech-to-text mistakes — if a word is nonsense or clearly wrong given the sentence, \
+            replace it with the most likely intended word from context. \
+            Do not invent new ideas or change the speaker’s intent. \
+            Preferred languages: \(langs). Do not translate. \
+            Output only the cleaned text.
+            """
+        case .shape:
+            return """
+            Turn this spoken transcript into a clear written message the speaker would have typed carefully. \
+            Fix typos, punctuation, casing, and obvious misheard words from context. \
+            Reorganize when helpful: use bullet lists for enumerations, parentheses for asides, \
+            short paragraphs or line breaks for separate thoughts, and light emphasis only when the speech implies it. \
+            Keep the speaker’s meaning; do not invent content. Prefer languages: \(langs). Do not translate. \
+            Output only the final message text.
+            """
+        }
+    }
+}

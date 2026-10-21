@@ -901,6 +901,7 @@ struct AISettingsView: View {
     @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
+    @State private var selectedCleanupStyle: CleanupStyle = VocalisConfig.load().resolvedCleanupStyle
     @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
 
     private var exampleHoldCost: String {
@@ -1029,10 +1030,10 @@ struct AISettingsView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Cleanup")
+                            Text("Cleanup model")
                                 .font(VocalisTheme.caption)
                                 .foregroundStyle(.secondary)
-                            Picker("Cleanup", selection: $selectedCleanup) {
+                            Picker("Cleanup model", selection: $selectedCleanup) {
                                 ForEach(ModelCatalog.cleanupChoices) { choice in
                                     Text("\(choice.title) — \(choice.detail)").tag(choice.rawValue)
                                 }
@@ -1045,6 +1046,27 @@ struct AISettingsView: View {
                             .onChange(of: selectedCleanup) { newValue in
                                 saveCleanup(newValue)
                             }
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Cleanup strength")
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Cleanup strength", selection: $selectedCleanupStyle) {
+                                ForEach(CleanupStyle.allCases) { style in
+                                    Text("\(style.title) — \(style.detail)").tag(style)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .disabled(!ModelCatalog.isCleanupEnabled(selectedCleanup))
+                            .onChange(of: selectedCleanupStyle) { newValue in
+                                saveCleanupStyle(newValue)
+                            }
+                            Text(selectedCleanupStyle.detail)
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -1125,6 +1147,7 @@ struct AISettingsView: View {
             selectedCleanup = ModelCatalog.isCleanupEnabled(config.cleanupModel)
                 ? config.cleanupModel
                 : ModelCatalog.cleanupOff
+            selectedCleanupStyle = config.resolvedCleanupStyle
             streamingSTT = config.streamingSTT
             micDevices = MicDevices.listInputs()
             state.refresh(
@@ -1170,6 +1193,20 @@ struct AISettingsView: View {
                 : "Cleanup model updated."
         } catch {
             state.statusMessage = "Could not save model."
+        }
+    }
+
+    private func saveCleanupStyle(_ style: CleanupStyle) {
+        do {
+            var next = VocalisConfig.load()
+            next.cleanupStyle = style.rawValue
+            try next.save()
+            config = next
+            selectedCleanupStyle = style
+            onModelsChanged()
+            state.statusMessage = "Cleanup strength: \(style.title)."
+        } catch {
+            state.statusMessage = "Could not save cleanup strength."
         }
     }
 

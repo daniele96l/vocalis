@@ -67,6 +67,11 @@ public final class DictationController {
         try config.save()
     }
 
+    public func setCleanupStyle(_ style: CleanupStyle) throws {
+        config.cleanupStyle = style.rawValue
+        try config.save()
+    }
+
     public func setStreamingSTT(_ enabled: Bool) throws {
         config.streamingSTT = enabled
         try config.save()

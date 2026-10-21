@@ -46,7 +46,7 @@ public final class OpenAIClient: Sendable {
 
     private var cleanupSystemPrompt: String {
         let langs = LanguageCatalog.displayNames(for: config.languages)
-        return "Fix typos, punctuation, casing. Keep meaning. Preferred languages: \(langs). Do not translate. Output only cleaned text."
+        return config.resolvedCleanupStyle.systemPrompt(preferredLanguages: langs)
     }
 
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
@@ -217,8 +217,10 @@ public final class OpenAIClient: Sendable {
         let key = config.resolvedAPIKey
         guard !key.isEmpty else { throw OpenAIClientError.missingKey }
 
-        // Skip a second API hop when Whisper already looks usable.
-        if Self.looksAlreadyClean(text) {
+        let style = config.resolvedCleanupStyle
+        // Light mode can skip when the transcript already looks polished.
+        // Fix / Shape always run — they may still rewrite wording or structure.
+        if style == .light, Self.looksAlreadyClean(text) {
             return CleanupResult(
                 text: text,
                 model: "skipped",
@@ -227,10 +229,18 @@ public final class OpenAIClient: Sendable {
             )
         }
 
+        let maxTokens: Int = {
+            switch style {
+            case .light: return min(400, max(64, text.count / 2 + 32))
+            case .fix: return min(500, max(80, text.count / 2 + 48))
+            case .shape: return min(900, max(120, text.count + 80))
+            }
+        }()
+
         let payload: [String: Any] = [
             "model": config.cleanupModel,
-            "temperature": 0,
-            "max_tokens": min(400, max(64, text.count / 2 + 32)),
+            "temperature": style == .shape ? 0.2 : 0,
+            "max_tokens": maxTokens,
             "messages": [
                 ["role": "system", "content": cleanupSystemPrompt],
                 ["role": "user", "content": text],

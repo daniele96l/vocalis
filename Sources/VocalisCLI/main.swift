@@ -164,6 +164,7 @@ enum VocalisCLI {
         print("  base_url:   \(config.baseURL)")
         print("  stt_model:  \(config.sttModel)")
         print("  cleanup:    \(config.cleanupModel)")
+        print("  cleanup style: \(config.resolvedCleanupStyle.title) (\(config.cleanupStyle))")
         print("  hotkey:     \(config.hotkey)")
         print("  accessibility trusted: \(Paster.isAccessibilityTrusted(prompt: false))")
         print("  last dictation: \(DictationArchive.lastDictationURL.path)")
