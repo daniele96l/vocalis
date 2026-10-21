@@ -809,11 +809,26 @@ struct SettingsView: View {
                         Text("Example ~10s hold with these models: \(exampleHoldCost)")
                             .font(.system(size: 13, weight: .medium))
 
-                        Toggle("Live transcription while holding", isOn: $streamingSTT)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle(isOn: $streamingSTT) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Speed up long dictations")
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text(
+                                        streamingSTT
+                                            ? "On — transcribes ~5s chunks while you hold. Turn off to wait and send one request on release."
+                                            : "Off — classic mode: one transcription after you release."
+                                    )
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
                             .toggleStyle(.switch)
                             .onChange(of: streamingSTT) { enabled in
                                 saveStreaming(enabled)
                             }
+                        }
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Speech-to-text")
