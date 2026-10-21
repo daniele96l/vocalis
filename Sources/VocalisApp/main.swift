@@ -4,159 +4,82 @@ import Combine
 import SwiftUI
 import VocalisCore
 
-// MARK: - Theme
+// MARK: - Theme (Notion-simple: flat, quiet, no gradient chrome)
 
 enum VocalisTheme {
-    /// Sea-glass teal — voice/signal, not purple-AI default.
-    static let accent = Color(red: 0.12, green: 0.58, blue: 0.55)
-    static let accentDeep = Color(red: 0.06, green: 0.38, blue: 0.40)
-    static let warm = Color(red: 0.92, green: 0.55, blue: 0.28)
-    static let ok = Color(red: 0.22, green: 0.70, blue: 0.48)
-    static let warn = Color(red: 0.90, green: 0.52, blue: 0.22)
+    static let accent = Color.primary
+    static let ok = Color(red: 0.15, green: 0.55, blue: 0.35)
+    static let warn = Color(red: 0.75, green: 0.45, blue: 0.12)
+    static let border = Color.primary.opacity(0.12)
+    static let fill = Color.primary.opacity(0.04)
 
-    static let display = Font.system(size: 30, weight: .bold, design: .rounded)
-    static let title = Font.system(size: 22, weight: .bold, design: .rounded)
-    static let body = Font.system(size: 13, weight: .regular, design: .rounded)
-    static let label = Font.system(size: 12, weight: .semibold, design: .rounded)
-    static let caption = Font.system(size: 11, weight: .medium, design: .rounded)
+    static let display = Font.system(size: 28, weight: .semibold)
+    static let title = Font.system(size: 20, weight: .semibold)
+    static let body = Font.system(size: 13, weight: .regular)
+    static let label = Font.system(size: 12, weight: .medium)
+    static let caption = Font.system(size: 11, weight: .regular)
 }
 
 struct AtmosphereBackground: View {
     @Environment(\.colorScheme) private var scheme
-    @State private var pulse = false
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: scheme == .dark
-                    ? [
-                        Color(red: 0.07, green: 0.10, blue: 0.12),
-                        Color(red: 0.05, green: 0.14, blue: 0.16),
-                        Color(red: 0.08, green: 0.11, blue: 0.14),
-                    ]
-                    : [
-                        Color(red: 0.93, green: 0.97, blue: 0.96),
-                        Color(red: 0.88, green: 0.95, blue: 0.94),
-                        Color(red: 0.95, green: 0.96, blue: 0.97),
-                    ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Circle()
-                .fill(VocalisTheme.accent.opacity(scheme == .dark ? 0.18 : 0.20))
-                .frame(width: 280, height: 280)
-                .blur(radius: 50)
-                .offset(x: 160, y: pulse ? -40 : -20)
-
-            Circle()
-                .fill(VocalisTheme.accentDeep.opacity(scheme == .dark ? 0.22 : 0.12))
-                .frame(width: 220, height: 220)
-                .blur(radius: 45)
-                .offset(x: -140, y: pulse ? 220 : 200)
-
-            // Soft waveform hint along the bottom
-            WaveformMotif()
-                .frame(height: 56)
-                .opacity(scheme == .dark ? 0.35 : 0.28)
-                .frame(maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, 8)
-                .padding(.horizontal, 20)
-        }
-        .ignoresSafeArea()
-        .onAppear {
-            withAnimation(.easeInOut(duration: 4.5).repeatForever(autoreverses: true)) {
-                pulse = true
-            }
-        }
-    }
-}
-
-struct WaveformMotif: View {
-    var body: some View {
-        HStack(alignment: .center, spacing: 4) {
-            ForEach(0..<28, id: \.self) { i in
-                let t = Double(i) / 27.0
-                let h = 8 + abs(sin(t * .pi * 3.2)) * 28 + (i % 3 == 0 ? 6 : 0)
-                Capsule()
-                    .fill(VocalisTheme.accent.opacity(0.35 + t * 0.25))
-                    .frame(width: 3, height: h)
-            }
-        }
-        .frame(maxWidth: .infinity)
+        (scheme == .dark ? Color(red: 0.12, green: 0.12, blue: 0.12) : Color(red: 1, green: 1, blue: 1))
+            .ignoresSafeArea()
     }
 }
 
 struct GlassCard<Content: View>: View {
-    @Environment(\.colorScheme) private var scheme
     @ViewBuilder var content: Content
 
     var body: some View {
         content
-            .padding(14)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(scheme == .dark
-                          ? Color.white.opacity(0.06)
-                          : Color.white.opacity(0.72))
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(VocalisTheme.fill)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(
-                                scheme == .dark
-                                    ? Color.white.opacity(0.08)
-                                    : Color.black.opacity(0.05),
-                                lineWidth: 1
-                            )
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .strokeBorder(VocalisTheme.border, lineWidth: 1)
                     )
             )
     }
 }
 
 struct AccentButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [VocalisTheme.accent, VocalisTheme.accentDeep],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .opacity(configuration.isPressed ? 0.85 : 1)
-            )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-struct QuietButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var scheme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, weight: .semibold, design: .rounded))
-            .foregroundStyle(scheme == .dark ? Color.white.opacity(0.92) : VocalisTheme.accentDeep)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(scheme == .dark ? Color.black : Color.white)
             .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6)
             .background(
-                Capsule(style: .continuous)
-                    .fill(scheme == .dark ? Color.white.opacity(0.12) : Color.white.opacity(0.85))
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .strokeBorder(
-                                scheme == .dark ? Color.white.opacity(0.14) : VocalisTheme.accent.opacity(0.25),
-                                lineWidth: 1
-                            )
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.primary)
+                    .opacity(configuration.isPressed ? 0.75 : 1)
+            )
+    }
+}
+
+struct QuietButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(VocalisTheme.border, lineWidth: 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.clear)
                     )
             )
-            .opacity(configuration.isPressed ? 0.8 : 1)
+            .opacity(configuration.isPressed ? 0.6 : 1)
     }
 }
 
@@ -166,14 +89,6 @@ enum AppTab: String, CaseIterable, Identifiable {
     case setup = "Setup"
 
     var id: String { rawValue }
-
-    var symbol: String {
-        switch self {
-        case .home: return "waveform"
-        case .settings: return "slider.horizontal.3"
-        case .setup: return "checkmark.shield"
-        }
-    }
 }
 
 final class AppNavigation: ObservableObject {
@@ -577,7 +492,6 @@ struct RootView: View {
                             onGoSetup: { nav.tab = .setup },
                             onRefresh: onRefresh
                         )
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
                     case .settings:
                         SettingsView(
                             state: state,
@@ -587,7 +501,6 @@ struct RootView: View {
                             onGoSetup: { nav.tab = .setup },
                             onGoHome: { nav.tab = .home }
                         )
-                        .transition(.opacity)
                     case .setup:
                         OnboardingView(
                             permissions: permissions,
@@ -595,10 +508,8 @@ struct RootView: View {
                             onGoHome: { nav.tab = .home },
                             onGoSettings: { nav.tab = .settings }
                         )
-                        .transition(.opacity.combined(with: .move(edge: .trailing)))
                     }
                 }
-                .animation(.easeInOut(duration: 0.22), value: nav.tab)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
@@ -612,49 +523,33 @@ struct RootView: View {
 
 struct TabStrip: View {
     @Binding var selection: AppTab
-    @Environment(\.colorScheme) private var scheme
-    @Namespace private var tabNS
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             ForEach(AppTab.allCases) { tab in
                 Button {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                        selection = tab
-                    }
+                    selection = tab
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: tab.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(tab.rawValue)
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    }
-                    .foregroundStyle(selection == tab ? Color.white : .secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background {
-                        if selection == tab {
-                            Capsule(style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [VocalisTheme.accent, VocalisTheme.accentDeep],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .matchedGeometryEffect(id: "tabPill", in: tabNS)
+                    Text(tab.rawValue)
+                        .font(.system(size: 13, weight: selection == tab ? .semibold : .regular))
+                        .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .fill(selection == tab ? Color.primary : Color.clear)
+                                .frame(height: 1.5)
                         }
-                    }
                 }
                 .buttonStyle(.plain)
             }
+            Spacer(minLength: 0)
         }
-        .padding(4)
-        .background(
-            Capsule(style: .continuous)
-                .fill(scheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.05))
-        )
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(VocalisTheme.border)
+                .frame(height: 1)
+        }
     }
 }
 
@@ -665,77 +560,65 @@ struct HomeView: View {
     var onGoSettings: () -> Void
     var onGoSetup: () -> Void
     var onRefresh: () -> Void
-    @State private var appeared = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Vocalis")
                     .font(VocalisTheme.display)
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [VocalisTheme.accent, VocalisTheme.accentDeep],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .opacity(appeared ? 1 : 0)
-                    .offset(y: appeared ? 0 : 8)
-
                 Text("Hold \(shortHotkey) to speak. Release to clean up and paste.")
                     .font(VocalisTheme.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .opacity(appeared ? 1 : 0)
             }
 
-            GlassCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    Button(action: onGoSetup) {
-                        statusLine(
-                            ok: state.permissionsOK,
-                            title: state.permissionsOK ? "Permissions ready" : "Permissions need attention",
-                            detail: state.permissionsOK
-                                ? "Mic, Accessibility, Input Monitoring look good."
-                                : "Open Setup to finish permissions."
-                        )
-                    }
-                    .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 0) {
+                Button(action: onGoSetup) {
+                    statusLine(
+                        ok: state.permissionsOK,
+                        title: state.permissionsOK ? "Permissions ready" : "Permissions need attention",
+                        detail: state.permissionsOK
+                            ? "Mic, Accessibility, Input Monitoring look good."
+                            : "Open Setup to finish permissions."
+                    )
+                }
+                .buttonStyle(.plain)
 
-                    thinRule
+                thinRule
 
-                    Button(action: onGoSettings) {
-                        statusLine(
-                            ok: state.keyConfigured,
-                            title: state.keyConfigured ? "API key configured" : "API key missing",
-                            detail: state.keyConfigured ? "Stored on this Mac only." : "Add a key in Settings."
-                        )
-                    }
-                    .buttonStyle(.plain)
+                Button(action: onGoSettings) {
+                    statusLine(
+                        ok: state.keyConfigured,
+                        title: state.keyConfigured ? "API key configured" : "API key missing",
+                        detail: state.keyConfigured ? "Stored on this Mac only." : "Add a key in Settings."
+                    )
+                }
+                .buttonStyle(.plain)
 
-                    thinRule
+                thinRule
 
-                    HStack(alignment: .top) {
-                        metaBlock(title: "Hotkey", value: state.hotkeyLabel)
-                        Spacer(minLength: 12)
-                        metaBlock(title: "Usage today", value: state.usageToday, detail: state.usageTodayDetail)
-                    }
+                HStack(alignment: .top) {
+                    metaBlock(title: "Hotkey", value: state.hotkeyLabel)
+                    Spacer(minLength: 12)
+                    metaBlock(title: "Usage today", value: state.usageToday, detail: state.usageTodayDetail)
+                }
+                .padding(.vertical, 10)
 
-                    thinRule
+                thinRule
 
-                    metaBlock(title: "Microphone", value: state.micDeviceName, detail: "Change in Settings")
+                metaBlock(title: "Microphone", value: state.micDeviceName, detail: "Change in Settings")
+                    .padding(.vertical, 10)
 
-                    if !state.hotkeyWarning.isEmpty {
-                        Text(state.hotkeyWarning)
-                            .font(VocalisTheme.caption)
-                            .foregroundStyle(VocalisTheme.warn)
-                    }
+                if !state.hotkeyWarning.isEmpty {
+                    Text(state.hotkeyWarning)
+                        .font(VocalisTheme.caption)
+                        .foregroundStyle(VocalisTheme.warn)
+                        .padding(.bottom, 4)
                 }
             }
-            .opacity(appeared ? 1 : 0)
-            .offset(y: appeared ? 0 : 12)
+            .padding(.horizontal, 2)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button("API key & hotkey") { onGoSettings() }
                     .buttonStyle(AccentButtonStyle())
                 Button("Permissions") { onGoSetup() }
@@ -750,11 +633,6 @@ struct HomeView: View {
         .padding(.horizontal, 24)
         .padding(.top, 8)
         .padding(.bottom, 20)
-        .onAppear {
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
-                appeared = true
-            }
-        }
     }
 
     private var shortHotkey: String {
@@ -763,18 +641,17 @@ struct HomeView: View {
 
     private var thinRule: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.06))
+            .fill(VocalisTheme.border)
             .frame(height: 1)
     }
 
     private func metaBlock(title: String, value: String, detail: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(.tertiary)
-                .tracking(0.6)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(VocalisTheme.caption)
+                .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .font(.system(size: 14, weight: .medium))
             if let detail {
                 Text(detail)
                     .font(VocalisTheme.caption)
@@ -785,23 +662,21 @@ struct HomeView: View {
 
     private func statusLine(ok: Bool, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(ok ? VocalisTheme.ok.opacity(0.18) : VocalisTheme.warn.opacity(0.18))
-                    .frame(width: 28, height: 28)
-                Image(systemName: ok ? "checkmark" : "exclamationmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(ok ? VocalisTheme.ok : VocalisTheme.warn)
-            }
+            Text(ok ? "✓" : "!")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(ok ? VocalisTheme.ok : VocalisTheme.warn)
+                .frame(width: 16, alignment: .center)
+                .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .semibold, design: .rounded))
+                Text(title).font(.system(size: 13, weight: .medium))
                 Text(detail).font(VocalisTheme.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
+            Text("→")
+                .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
         }
+        .padding(.vertical, 10)
     }
 }
 
@@ -837,7 +712,7 @@ struct SettingsView: View {
                 GlassCard {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(state.hotkeyLabel)
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .font(.system(size: 15, weight: .medium))
                         Text(recording ? "Press new shortcut… (Esc to cancel)" : recordHint)
                             .font(VocalisTheme.body)
                             .foregroundStyle(recording ? VocalisTheme.warn : Color.secondary)
@@ -897,7 +772,7 @@ struct SettingsView: View {
                                 Image(systemName: "checkmark.seal.fill")
                                     .foregroundStyle(VocalisTheme.ok)
                                 Text("Key configured")
-                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .font(.system(size: 14, weight: .medium))
                             }
                             Text("Stored only in ~/.config/vocalis on this Mac. Never shown in full.")
                                 .font(VocalisTheme.body)
@@ -966,10 +841,9 @@ struct SettingsView: View {
     }
 
     private func sectionLabel(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.system(size: 10, weight: .bold, design: .rounded))
-            .foregroundStyle(.tertiary)
-            .tracking(0.8)
+        Text(title)
+            .font(VocalisTheme.caption)
+            .foregroundStyle(.secondary)
             .padding(.top, 4)
     }
 
@@ -981,7 +855,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(cost) estimated")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.system(size: 13, weight: .medium))
                 Text(detail)
                     .font(VocalisTheme.caption)
                     .foregroundStyle(.secondary)
@@ -1090,27 +964,17 @@ struct OnboardingView: View {
                     subtitle: "Allow Microphone, Accessibility, and Input Monitoring so hold-to-talk can record and paste."
                 )
 
-                HStack(spacing: 8) {
-                    Image(systemName: "keyboard")
-                        .foregroundStyle(VocalisTheme.accent)
-                    Text(state.hotkeyLabel)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(VocalisTheme.accent.opacity(0.12))
-                )
+                Text("Hotkey: \(state.hotkeyLabel)")
+                    .font(VocalisTheme.body)
+                    .foregroundStyle(.secondary)
 
                 if !permissions.duplicateInstallWarning.isEmpty {
-                    callout(icon: "exclamationmark.triangle.fill", text: permissions.duplicateInstallWarning)
+                    callout(text: permissions.duplicateInstallWarning)
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 0) {
                     PermissionRow(
                         title: "Microphone",
-                        symbol: "mic.fill",
                         detail: permissions.snapshot.microphone ? nil : permissions.microphoneHelp,
                         granted: permissions.snapshot.microphone,
                         enableTitle: "Enable",
@@ -1118,9 +982,9 @@ struct OnboardingView: View {
                         onEnable: { Task { await permissions.requestMicrophone() } },
                         onOpenSettings: { permissions.openMicrophoneSettings() }
                     )
+                    thinDivider
                     PermissionRow(
                         title: "Accessibility",
-                        symbol: "accessibility",
                         detail: permissions.snapshot.accessibility ? nil : permissions.accessibilityHelp,
                         granted: permissions.snapshot.accessibility,
                         enableTitle: "Enable",
@@ -1128,9 +992,9 @@ struct OnboardingView: View {
                         onEnable: { permissions.openAccessibilitySettings(promptSystem: true) },
                         onOpenSettings: { permissions.openAccessibilitySettings(promptSystem: false) }
                     )
+                    thinDivider
                     PermissionRow(
                         title: "Input Monitoring",
-                        symbol: "keyboard.fill",
                         detail: permissions.snapshot.inputMonitoring ? nil : permissions.inputMonitoringHelp,
                         granted: permissions.snapshot.inputMonitoring,
                         enableTitle: "Enable",
@@ -1139,9 +1003,13 @@ struct OnboardingView: View {
                         onOpenSettings: { permissions.openInputMonitoringSettings(request: false) }
                     )
                 }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(VocalisTheme.border, lineWidth: 1)
+                )
 
                 if !permissions.hotkeyStatusMessage.isEmpty {
-                    callout(icon: "hand.tap.fill", text: permissions.hotkeyStatusMessage)
+                    callout(text: permissions.hotkeyStatusMessage)
                 }
 
                 Text(permissions.runningAppPath)
@@ -1151,7 +1019,7 @@ struct OnboardingView: View {
                     .textSelection(.enabled)
 
                 if !state.keyConfigured {
-                    callout(icon: "key.fill", text: "API key still missing — add it in Settings when permissions are done.")
+                    callout(text: "API key still missing — add it in Settings when permissions are done.")
                 }
 
                 HStack {
@@ -1181,62 +1049,51 @@ struct OnboardingView: View {
         }
     }
 
-    private func callout(icon: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .foregroundStyle(VocalisTheme.warn)
-                .font(.system(size: 13, weight: .semibold))
-            Text(text)
-                .font(VocalisTheme.caption)
-                .foregroundStyle(.primary.opacity(0.8))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(VocalisTheme.warn.opacity(0.10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(VocalisTheme.warn.opacity(0.22), lineWidth: 1)
-                )
-        )
+    private var thinDivider: some View {
+        Rectangle()
+            .fill(VocalisTheme.border)
+            .frame(height: 1)
+    }
+
+    private func callout(text: String) -> some View {
+        Text(text)
+            .font(VocalisTheme.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(VocalisTheme.border, lineWidth: 1)
+            )
     }
 }
 
 struct PermissionRow: View {
     var title: String
-    var symbol: String
     var detail: String? = nil
     var granted: Bool
     var enableTitle: String
     var openTitle: String
     var onEnable: () -> Void
     var onOpenSettings: () -> Void
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(granted
-                          ? VocalisTheme.ok.opacity(0.16)
-                          : VocalisTheme.warn.opacity(0.14))
-                    .frame(width: 36, height: 36)
-                Image(systemName: symbol)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(granted ? VocalisTheme.ok : VocalisTheme.warn)
-            }
+        HStack(alignment: .center, spacing: 10) {
+            Text(granted ? "✓" : "·")
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(granted ? VocalisTheme.ok : .secondary)
+                .frame(width: 14)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(.system(size: 13, weight: .medium))
                 Text(granted ? "Granted" : "Not granted")
                     .font(VocalisTheme.caption)
                     .foregroundStyle(granted ? VocalisTheme.ok : VocalisTheme.warn)
                 if let detail, !granted {
                     Text(detail)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .font(VocalisTheme.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1256,19 +1113,6 @@ struct PermissionRow: View {
             }
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(scheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.72))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(
-                            granted
-                                ? VocalisTheme.ok.opacity(0.25)
-                                : Color.primary.opacity(0.06),
-                            lineWidth: 1
-                        )
-                )
-        )
     }
 }
 
