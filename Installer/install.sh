@@ -39,6 +39,10 @@ cd "$SRC"
 chmod +x Scripts/package-app.sh Installer/install.sh
 ./Scripts/package-app.sh release
 
+# Quit any running Vocalis so TCC binds to the freshly installed copy.
+pkill -x Vocalis 2>/dev/null || true
+sleep 0.3
+
 mkdir -p "$APP_DIR" "$BIN_DIR"
 rm -rf "$APP_DIR/Vocalis.app" "$APP_DIR/WispFlow.app"
 cp -R .build/Vocalis.app "$APP_DIR/Vocalis.app"
@@ -48,6 +52,14 @@ rm -f "$BIN_DIR/wispflow" "$BIN_DIR/WispFlow.app" 2>/dev/null || true
 
 # Convenience: also keep a pointer so `vocalis start` finds the app
 ln -sfn "$APP_DIR/Vocalis.app" "$BIN_DIR/Vocalis.app" 2>/dev/null || true
+
+# Warn if another Vocalis.app exists (TCC grants are per-copy / code identity).
+if [[ "$APP_DIR/Vocalis.app" != "/Applications/Vocalis.app" && -d /Applications/Vocalis.app ]]; then
+  echo ""
+  echo "Note: /Applications/Vocalis.app also exists."
+  echo "      Prefer one copy. This install uses: $APP_DIR/Vocalis.app"
+  echo "      Grant Mic / Accessibility / Input Monitoring for that path."
+fi
 
 echo ""
 echo "==> Installed"
@@ -63,5 +75,6 @@ echo "Next:"
 echo "  vocalis setup"
 echo "  vocalis start"
 echo ""
-echo "Then grant Microphone + Accessibility when prompted."
+echo "Then grant Microphone + Accessibility + Input Monitoring when prompted."
+echo "If Vocalis is missing from Input Monitoring: click + and choose $APP_DIR/Vocalis.app."
 echo "Hold Right Option to dictate (or Ctrl+Shift+Space if configured)."

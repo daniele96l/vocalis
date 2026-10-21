@@ -19,8 +19,13 @@ mkdir -p "$STAGE"
 cp -R "$APP_SRC" "$STAGE/Vocalis.app"
 ln -s /Applications "$STAGE/Applications"
 
-# Ad-hoc sign again after copy
-codesign --force --deep --sign - "$STAGE/Vocalis.app" >/dev/null
+# Distributable DMG: always ad-hoc so other Macs don't need this machine's
+# local "Vocalis Local Codesign" cert. Dev installs via package-app.sh may use
+# that identity for stabler TCC on the build machine.
+ENTITLEMENTS="$ROOT/Resources/Vocalis.entitlements"
+codesign --force --deep --sign - --identifier "com.daniele96l.vocalis" \
+  --entitlements "$ENTITLEMENTS" "$STAGE/Vocalis.app" >/dev/null
+
 
 hdiutil create \
   -volname "Vocalis" \

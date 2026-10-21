@@ -48,7 +48,7 @@ public final class HotkeyMonitor {
         }
 
         // HID tap requires Input Monitoring (session taps can succeed with Accessibility alone).
-        let tap = CGEvent.tapCreate(
+        var tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .listenOnly,
@@ -56,6 +56,19 @@ public final class HotkeyMonitor {
             callback: callback,
             userInfo: refcon
         )
+
+        if tap == nil {
+            // Ask TCC to register this .app under Input Monitoring, then retry once.
+            _ = PermissionProbe.requestInputMonitoring()
+            tap = CGEvent.tapCreate(
+                tap: .cghidEventTap,
+                place: .headInsertEventTap,
+                options: .listenOnly,
+                eventsOfInterest: CGEventMask(mask),
+                callback: callback,
+                userInfo: refcon
+            )
+        }
 
         guard let tap else {
             isTapInstalled = false

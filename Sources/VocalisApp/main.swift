@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             permissions.setEventTapInstalledProvider { [weak controller] in
                 controller?.isHotkeyTapInstalled ?? false
             }
+            permissions.setHotkeyRetry { [weak controller] in
+                controller?.retryHotkeyTap()
+            }
             controller.hotkey.onTapStateChanged = { [weak self] _ in
                 guard let app = self else { return }
                 Task { @MainActor in
@@ -44,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.hotkey.onAnyKeyEvent = { [weak self] in
                 self?.permissions.markKeyEventReceived()
             }
+            // Register with Input Monitoring TCC so Vocalis appears in the list.
+            permissions.ensureInputMonitoringRegistered()
             controller.start()
             syncAppState()
 
@@ -704,9 +709,23 @@ struct OnboardingView: View {
             Text("Current hotkey: \(state.hotkeyLabel)")
                 .font(.system(size: 13, weight: .medium))
 
+            if !permissions.duplicateInstallWarning.isEmpty {
+                Text(permissions.duplicateInstallWarning)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.orange.opacity(0.08))
+                    )
+            }
+
             VStack(alignment: .leading, spacing: 12) {
                 PermissionRow(
                     title: "Microphone",
+                    detail: permissions.snapshot.microphone ? nil : permissions.microphoneHelp,
                     granted: permissions.snapshot.microphone,
                     enableTitle: "Enable Microphone",
                     openTitle: "Open Mic Settings",
@@ -715,6 +734,7 @@ struct OnboardingView: View {
                 )
                 PermissionRow(
                     title: "Accessibility",
+                    detail: permissions.snapshot.accessibility ? nil : permissions.accessibilityHelp,
                     granted: permissions.snapshot.accessibility,
                     enableTitle: "Enable Accessibility",
                     openTitle: "Open Accessibility Settings",
@@ -723,7 +743,7 @@ struct OnboardingView: View {
                 )
                 PermissionRow(
                     title: "Input Monitoring",
-                    detail: "Enable Vocalis in System Settings → Input Monitoring, then press any key to verify",
+                    detail: permissions.snapshot.inputMonitoring ? nil : permissions.inputMonitoringHelp,
                     granted: permissions.snapshot.inputMonitoring,
                     enableTitle: "Enable Input Monitoring",
                     openTitle: "Open Input Monitoring Settings",
@@ -738,6 +758,11 @@ struct OnboardingView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Text("Running: \(permissions.runningAppPath)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
 
             if !state.keyConfigured {
                 HStack(spacing: 8) {
@@ -768,7 +793,10 @@ struct OnboardingView: View {
             }
         }
         .padding(24)
-        .onAppear { permissions.refresh() }
+        .onAppear {
+            permissions.ensureInputMonitoringRegistered()
+            permissions.refresh()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
         }
