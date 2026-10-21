@@ -27,10 +27,6 @@ public final class BubbleOverlayController {
         }
         ensurePanel()
         guard let panel else { return }
-        position(panel)
-        if !panel.isVisible {
-            panel.orderFrontRegardless()
-        }
         let size: NSSize = {
             switch state {
             case .listening: return NSSize(width: 292, height: 86)
@@ -39,7 +35,12 @@ public final class BubbleOverlayController {
         }()
         var frame = panel.frame
         frame.size = size
-        panel.setFrame(frame, display: true, animate: true)
+        panel.setFrame(frame, display: false)
+        // Fixed bottom-center — never follows the cursor.
+        positionBottomCenter(panel)
+        if !panel.isVisible {
+            panel.orderFrontRegardless()
+        }
     }
 
     public func updateMeter(level: Float, micName: String) {
@@ -86,23 +87,20 @@ public final class BubbleOverlayController {
         self.panel = panel
     }
 
-    private func position(_ panel: NSPanel) {
+    /// Centered horizontally, just above the Dock / screen bottom edge.
+    private func positionBottomCenter(_ panel: NSPanel) {
         let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
+        let visible = screen.visibleFrame
         let size = panel.frame.size
-        var origin = NSPoint(x: mouse.x - size.width / 2, y: mouse.y + 24)
-        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
-            let visible = screen.visibleFrame
-            if origin.y + size.height > visible.maxY {
-                origin.y = mouse.y - size.height - 24
-            }
-            origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
-            if origin.y < visible.minY + 8 {
-                origin = NSPoint(
-                    x: visible.midX - size.width / 2,
-                    y: visible.minY + 48
-                )
-            }
-        }
+        let margin: CGFloat = 28
+        let origin = NSPoint(
+            x: visible.midX - size.width / 2,
+            y: visible.minY + margin
+        )
         panel.setFrameOrigin(origin)
     }
 }
