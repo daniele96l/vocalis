@@ -81,13 +81,20 @@ public final class LiveTranscriber {
     }
 
     private static func merge(_ left: String, _ right: String) -> String {
+        let leftNorm = normalizeForCompare(left)
+        let rightNorm = normalizeForCompare(right)
+        // Drop near-duplicate chunks (same sentence sealed twice / full-take overlap).
+        if !rightNorm.isEmpty, leftNorm == rightNorm { return left }
+        if rightNorm.count >= 12, leftNorm.contains(rightNorm) { return left }
+        if leftNorm.count >= 12, rightNorm.contains(leftNorm) { return right }
+
         let leftTokens = left.split(separator: " ").map(String.init)
         let rightTokens = right.split(separator: " ").map(String.init)
         guard !leftTokens.isEmpty, !rightTokens.isEmpty else {
             return left.isEmpty ? right : (right.isEmpty ? left : "\(left) \(right)")
         }
-        // Longest overlap of trailing left vs leading right (up to 4 tokens).
-        let maxOverlap = min(4, leftTokens.count, rightTokens.count)
+        // Longest overlap of trailing left vs leading right (up to 8 tokens).
+        let maxOverlap = min(8, leftTokens.count, rightTokens.count)
         var overlap = 0
         for n in stride(from: maxOverlap, through: 1, by: -1) {
             let a = leftTokens.suffix(n).map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
@@ -100,5 +107,12 @@ public final class LiveTranscriber {
         let mergedRight = rightTokens.dropFirst(overlap).joined(separator: " ")
         if mergedRight.isEmpty { return left }
         return "\(left) \(mergedRight)"
+    }
+
+    private static func normalizeForCompare(_ s: String) -> String {
+        s.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[\\s[:punct:]]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

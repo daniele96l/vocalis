@@ -460,7 +460,15 @@ public final class OpenAIClient: Sendable {
                 throw OpenAIClientError.decode
             }
             let out = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            let finalText = out.isEmpty ? trimmed : out
+            // Guard against models that echo / loop the input many times.
+            let finalText: String = {
+                if out.isEmpty { return trimmed }
+                if out.count > max(trimmed.count * 2 + 40, trimmed.count + 120) {
+                    NSLog("Vocalis: sense-check output too long — keeping prior text")
+                    return trimmed
+                }
+                return out
+            }()
             let usage = json["usage"] as? [String: Any]
             let promptTokens = (usage?["prompt_tokens"] as? Int)
                 ?? Self.estimateTokens(system) + Self.estimateTokens(trimmed)

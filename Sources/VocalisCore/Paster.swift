@@ -26,8 +26,7 @@ public enum Paster {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Always archives + copies to clipboard first, then tries ⌘V.
-    /// Never restores the previous clipboard — that used to wipe the dictation on soft failures.
+    /// Always archives + copies to clipboard first, then tries ⌘V once.
     @MainActor
     @discardableResult
     public static func deliver(_ text: String, archiveNote: String = "") throws -> PasteResult {
@@ -41,7 +40,6 @@ public enum Paster {
         pasteboard.setString(trimmed, forType: .string)
         NSLog("Vocalis: dictation on clipboard (\(trimmed.count) chars)")
 
-        // Prompt once if needed — after reinstalls TCC often forgets this binary.
         if !isAccessibilityTrusted(prompt: false) {
             _ = isAccessibilityTrusted(prompt: true)
         }
@@ -50,24 +48,20 @@ public enum Paster {
             return .clipboardOnly
         }
 
-        // Settle so the focused app sees the new clipboard before ⌘V.
-        Thread.sleep(forTimeInterval: 0.12)
+        Thread.sleep(forTimeInterval: 0.08)
 
-        guard postCommandV() else {
+        // One ⌘V only. Posting to both HID + session (and a “retry” pulse) was
+        // pasting the same clipboard 4× into the focused field.
+        guard postCommandVOnce() else {
             NSLog("Vocalis: could not create ⌘V events — clipboard only")
             return .clipboardOnly
         }
-
-        // Second pulse helps some Electron / browser fields that ignore the first.
-        Thread.sleep(forTimeInterval: 0.06)
-        _ = postCommandV()
 
         NSLog("Vocalis: posted ⌘V")
         return .pasted
     }
 
-    /// Posts ⌘V via HID and session taps (session helps when HID is filtered).
-    private static func postCommandV() -> Bool {
+    private static func postCommandVOnce() -> Bool {
         let source = CGEventSource(stateID: .hidSystemState)
         guard
             let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
@@ -77,14 +71,11 @@ public enum Paster {
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        for tap in [CGEventTapLocation.cghidEventTap, .cgSessionEventTap] {
-            keyDown.post(tap: tap)
-            keyUp.post(tap: tap)
-        }
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
         return true
     }
 
-    /// Legacy name — prefer `deliver`.
     @MainActor
     public static func paste(_ text: String) throws {
         _ = try deliver(text)
