@@ -20,8 +20,8 @@ npx wrangler secret put LICENSE_CODES
 npx wrangler deploy
 ```
 
-Note the workers.dev URL (e.g. `https://vocalis-proxy.<subdomain>.workers.dev`).  
-If it differs from the app default (`https://vocalis-proxy.daniele96l.workers.dev`), set `license_proxy_url` in `~/.config/vocalis/config.toml` or change `VocalisConfig.defaultLicenseProxyURL`.
+Deployed URL: `https://vocalis-proxy.daniele96ligato.workers.dev`  
+(That matches `VocalisConfig.defaultLicenseProxyURL`. Override with `license_proxy_url` in config if you change accounts.)
 
 ## Routes
 

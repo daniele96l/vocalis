@@ -23,7 +23,7 @@ public struct VocalisConfig: Equatable, Sendable {
 
     public static let defaultBaseURL = "https://api.openai.com/v1"
     /// Default Worker URL after `wrangler deploy` (override in config if needed).
-    public static let defaultLicenseProxyURL = "https://vocalis-proxy.daniele96l.workers.dev"
+    public static let defaultLicenseProxyURL = "https://vocalis-proxy.daniele96ligato.workers.dev"
     /// Default to cheapest OpenAI STT; pick Grok in Settings for ~½ the cost.
     public static let defaultSTTModel = "gpt-4o-mini-transcribe"
     public static let defaultCleanupModel = "gpt-4o-mini"

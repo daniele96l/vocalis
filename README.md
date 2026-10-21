@@ -132,7 +132,7 @@ Legacy `~/.config/wispflow/config.toml` is migrated automatically on first load.
 openai_api_key = ""
 xai_api_key = ""
 license_code = ""
-license_proxy_url = "https://vocalis-proxy.daniele96l.workers.dev"
+license_proxy_url = "https://vocalis-proxy.daniele96ligato.workers.dev"
 base_url = "https://api.openai.com/v1"
 stt_model = "whisper-1"
 cleanup_model = "gpt-4o-mini"
