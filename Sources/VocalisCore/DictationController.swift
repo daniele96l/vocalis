@@ -196,14 +196,24 @@ public final class DictationController {
             do {
                 let audioURL = try recorder.stop()
 
+                // Pick up Account changes (license / keys) without requiring an app restart.
+                reloadConfig()
+
                 guard config.hasTranscriptionKey else {
                     try? FileManager.default.removeItem(at: audioURL)
-                    showError(config.usesGrokSTT ? "No xAI key" : "Bad key")
+                    showError(
+                        config.usesGrokSTT
+                            ? "No xAI key or license"
+                            : "No API key or license"
+                    )
                     return
                 }
-                if ModelCatalog.isCleanupEnabled(config.cleanupModel), !config.hasOpenAIKey {
+                // Cleanup needs OpenAI (or the license proxy) — not a local key when licensed.
+                if ModelCatalog.isCleanupEnabled(config.cleanupModel),
+                   !config.usesLicense,
+                   !config.hasOpenAIKey {
                     try? FileManager.default.removeItem(at: audioURL)
-                    showError("No OpenAI key")
+                    showError("No OpenAI key or license")
                     return
                 }
 
