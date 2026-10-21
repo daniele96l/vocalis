@@ -942,13 +942,26 @@ struct AccountSettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        SecureField(
+                        if config.usesLicense {
+                            Text("Active: \(maskedLicense(config.resolvedLicenseCode))")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+
+                        // Plain TextField (not SecureField) so the code is visible and ⌘V / paste works.
+                        TextField(
                             config.usesLicense ? "Replace license…" : "VOC-XXXX-XXXX-XXXX",
                             text: $pastedLicense
                         )
                         .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 13, design: .monospaced))
+                        .autocorrectionDisabled()
+                        .textSelection(.enabled)
 
                         HStack(spacing: 8) {
+                            Button("Paste") { pasteLicenseFromClipboard() }
+                                .buttonStyle(QuietButtonStyle())
                             Button("Activate license") { saveLicense() }
                                 .buttonStyle(AccentButtonStyle())
                                 .disabled(pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -1110,6 +1123,26 @@ struct AccountSettingsView: View {
         } catch {
             state.statusMessage = "Could not clear license."
         }
+    }
+
+    private func pasteLicenseFromClipboard() {
+        guard let raw = NSPasteboard.general.string(forType: .string) else {
+            state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
+            return
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
+            return
+        }
+        pastedLicense = trimmed
+        state.statusMessage = "Pasted — tap Activate license."
+    }
+
+    private func maskedLicense(_ code: String) -> String {
+        let parts = code.split(separator: "-")
+        guard parts.count >= 4 else { return code }
+        return "\(parts[0])-\(parts[1])-…-\(parts[parts.count - 1])"
     }
 }
 
