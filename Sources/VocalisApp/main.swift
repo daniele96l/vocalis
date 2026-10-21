@@ -218,17 +218,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.start()
             syncAppState()
 
-            // Fixed-width slot so a template icon is always visible in the menu bar.
-            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            // Keep a strong reference; show both template icon and "V" so the extra
+            // is never an invisible blank slot (color icons / empty templates vanish).
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.isVisible = true
             if let button = item.button {
-                button.image = Self.menubarIcon()
-                button.image?.isTemplate = true
+                let icon = Self.menubarIcon()
+                button.image = icon
+                button.imagePosition = .imageLeading
+                button.title = "V"
+                button.font = NSFont.systemFont(ofSize: 12, weight: .bold)
                 button.toolTip = "Vocalis — hold hotkey to dictate"
                 button.appearsDisabled = false
             }
             statusItem = item
-            rebuildMenu()
+            // Defer menu build so the status item is attached to the bar first.
+            DispatchQueue.main.async { [weak self] in
+                self?.rebuildMenu()
+                self?.statusItem?.isVisible = true
+            }
 
             permissions.refresh()
             syncAppState()
@@ -282,20 +290,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// Always a template SF Symbol — colorful AppIcon.icns is invisible on dark menu bars.
+    /// Template SF Symbol — colorful AppIcon.icns disappears on dark menu bars.
     private static func menubarIcon() -> NSImage {
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        if let image = NSImage(
-            systemSymbolName: "waveform.circle.fill",
-            accessibilityDescription: "Vocalis"
-        )?.withSymbolConfiguration(config) {
-            image.isTemplate = true
-            return image
+        let names = ["waveform.circle.fill", "waveform", "mic.fill"]
+        for name in names {
+            if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Vocalis") {
+                let sized = NSImage(size: NSSize(width: 18, height: 18))
+                sized.lockFocus()
+                NSGraphicsContext.current?.imageInterpolation = .high
+                image.draw(
+                    in: NSRect(x: 0, y: 0, width: 18, height: 18),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1
+                )
+                sized.unlockFocus()
+                sized.isTemplate = true
+                return sized
+            }
         }
-        // Last resort: text status item
-        let fallback = NSImage(size: NSSize(width: 18, height: 18))
-        fallback.isTemplate = true
-        return fallback
+        // Drawn template circle so we never install a blank image.
+        let img = NSImage(size: NSSize(width: 18, height: 18))
+        img.lockFocus()
+        NSColor.black.setStroke()
+        let path = NSBezierPath(ovalIn: NSRect(x: 2, y: 2, width: 14, height: 14))
+        path.lineWidth = 1.5
+        path.stroke()
+        img.unlockFocus()
+        img.isTemplate = true
+        return img
     }
 
     private func rebuildMenu() {
