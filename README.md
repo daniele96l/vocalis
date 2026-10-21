@@ -2,15 +2,21 @@
 
 macOS menubar dictation: **hold hotkey → recording bubble → OpenAI Whisper → LLM cleanup → paste** into the focused field.
 
-## Install for someone else (no Terminal)
+## Download (no Terminal / no GitHub setup)
 
-1. Open `dist/Vocalis.dmg` (or `Vocalis.app.zip`).
-2. Drag **Vocalis** into **Applications**.
+Get the app from the latest release:
+
+**https://github.com/daniele96l/vocalis/releases/latest**
+
+1. Download **Vocalis.dmg** (or `Vocalis.app.zip`).
+2. Open it → drag **Vocalis** into **Applications**.
 3. First launch: right-click → **Open** once if macOS Gatekeeper warns (ad-hoc signed, not notarized).
 4. Grant **Microphone** + **Accessibility** (+ **Input Monitoring** if the hotkey does nothing).
-5. If no API key is configured yet, paste one in **Settings…** from the menubar icon.
+5. Paste an OpenAI API key in **Settings** (menubar → Open Vocalis).
 
 Hold **Right Option** to dictate; release to clean up and paste.
+
+Direct file: [Vocalis.dmg](https://github.com/daniele96l/vocalis/releases/download/v0.1.0/Vocalis.dmg)
 
 ## Install on this Mac (developer)
 
