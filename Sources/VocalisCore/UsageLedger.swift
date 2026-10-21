@@ -96,10 +96,13 @@ public struct UsageTotals: Equatable, Sendable {
     public var promptTokens: Int
     public var completionTokens: Int
     public var estimatedUSD: Double
+    public var sttUSD: Double
+    public var cleanupUSD: Double
 
     public static let zero = UsageTotals(
         requests: 0, sttRequests: 0, cleanupRequests: 0,
-        audioSeconds: 0, promptTokens: 0, completionTokens: 0, estimatedUSD: 0
+        audioSeconds: 0, promptTokens: 0, completionTokens: 0,
+        estimatedUSD: 0, sttUSD: 0, cleanupUSD: 0
     )
 
     public var summaryLine: String {
@@ -112,6 +115,13 @@ public struct UsageTotals: Equatable, Sendable {
             parts.insert("\(promptTokens + completionTokens) tok", at: 1)
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// e.g. "Voice $0.0120 · Cleanup $0.0003"
+    public var splitCostLine: String {
+        let voice = String(format: "Voice $%.4f", sttUSD)
+        let polish = String(format: "Cleanup $%.4f", cleanupUSD)
+        return "\(voice) · \(polish)"
     }
 }
 
@@ -201,9 +211,11 @@ public enum UsageLedger {
             switch e.kind {
             case .stt:
                 t.sttRequests += 1
+                t.sttUSD += e.estimatedUSD
                 t.audioSeconds += e.audioSeconds ?? 0
             case .cleanup:
                 t.cleanupRequests += 1
+                t.cleanupUSD += e.estimatedUSD
                 t.promptTokens += e.promptTokens ?? 0
                 t.completionTokens += e.completionTokens ?? 0
             }

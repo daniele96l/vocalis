@@ -453,6 +453,9 @@ final class AppState: ObservableObject {
     @Published var usageToday = "$0.0000"
     @Published var usageWeek = "$0.0000"
     @Published var usageTotal = "$0.0000"
+    @Published var usageTodaySplit = "Voice $0.0000 · Cleanup $0.0000"
+    @Published var usageWeekSplit = "Voice $0.0000 · Cleanup $0.0000"
+    @Published var usageTotalSplit = "Voice $0.0000 · Cleanup $0.0000"
     @Published var usageTodayDetail = "0 requests"
     @Published var usageWeekDetail = "0 requests"
     @Published var usageTotalDetail = "0 requests"
@@ -490,6 +493,9 @@ final class AppState: ObservableObject {
         usageToday = String(format: "$%.4f", report.today.estimatedUSD)
         usageWeek = String(format: "$%.4f", report.week.estimatedUSD)
         usageTotal = String(format: "$%.4f", report.total.estimatedUSD)
+        usageTodaySplit = report.today.splitCostLine
+        usageWeekSplit = report.week.splitCostLine
+        usageTotalSplit = report.total.splitCostLine
         usageTodayDetail = detail(report.today)
         usageWeekDetail = detail(report.week)
         usageTotalDetail = detail(report.total)
@@ -497,11 +503,22 @@ final class AppState: ObservableObject {
 
     private func detail(_ t: UsageTotals) -> String {
         if t.requests == 0 { return "0 requests" }
-        var parts = ["\(t.requests) requests"]
-        if t.audioSeconds > 0 { parts.append(String(format: "%.0fs audio", t.audioSeconds)) }
-        let tok = t.promptTokens + t.completionTokens
-        if tok > 0 { parts.append("\(tok) tokens") }
-        return parts.joined(separator: " · ")
+        var parts: [String] = []
+        if t.sttRequests > 0 {
+            var voice = "\(t.sttRequests) voice"
+            if t.audioSeconds > 0 {
+                voice += String(format: " · %.0fs", t.audioSeconds)
+            }
+            parts.append(voice)
+        }
+        if t.cleanupRequests > 0 {
+            var polish = "\(t.cleanupRequests) cleanup"
+            let tok = t.promptTokens + t.completionTokens
+            if tok > 0 { polish += " · \(tok) tok" }
+            parts.append(polish)
+        }
+        if parts.isEmpty { parts.append("\(t.requests) requests") }
+        return parts.joined(separator: "  ·  ")
     }
 }
 
@@ -684,9 +701,18 @@ struct HomeView: View {
                 HStack(alignment: .top) {
                     metaBlock(title: "Hotkey", value: state.hotkeyLabel)
                     Spacer(minLength: 12)
-                    metaBlock(title: "Usage today", value: state.usageToday, detail: state.usageTodayDetail)
+                    metaBlock(
+                        title: "Usage today",
+                        value: state.usageToday,
+                        detail: state.usageTodaySplit
+                    )
                 }
                 .padding(.vertical, 12)
+
+                Text(state.usageTodayDetail)
+                    .font(VocalisTheme.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.bottom, 4)
 
                 thinRule
 
@@ -1073,11 +1099,26 @@ struct SettingsView: View {
 
                 sectionLabel("Usage")
                 GlassCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        usageRow("Today", cost: state.usageToday, detail: state.usageTodayDetail)
-                        usageRow("This week", cost: state.usageWeek, detail: state.usageWeekDetail)
-                        usageRow("All time", cost: state.usageTotal, detail: state.usageTotalDetail)
-                        Text("Local estimates (Grok ≈ $0.10/hr; OpenAI STT ≈ $0.18–$0.36/hr; cleanup is token-priced). Not provider billing.")
+                    VStack(alignment: .leading, spacing: 12) {
+                        usageRow(
+                            "Today",
+                            cost: state.usageToday,
+                            split: state.usageTodaySplit,
+                            detail: state.usageTodayDetail
+                        )
+                        usageRow(
+                            "This week",
+                            cost: state.usageWeek,
+                            split: state.usageWeekSplit,
+                            detail: state.usageWeekDetail
+                        )
+                        usageRow(
+                            "All time",
+                            cost: state.usageTotal,
+                            split: state.usageTotalSplit,
+                            detail: state.usageTotalDetail
+                        )
+                        Text("Local estimates — Voice = speech-to-text; Cleanup = polish pass. Not provider billing.")
                             .font(VocalisTheme.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1215,7 +1256,7 @@ struct SettingsView: View {
             .padding(.top, 4)
     }
 
-    private func usageRow(_ label: String, cost: String, detail: String) -> some View {
+    private func usageRow(_ label: String, cost: String, split: String, detail: String) -> some View {
         HStack(alignment: .top) {
             Text(label)
                 .font(VocalisTheme.label)
@@ -1224,9 +1265,12 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(cost) estimated")
                     .font(.system(size: 13, weight: .medium))
-                Text(detail)
+                Text(split)
                     .font(VocalisTheme.caption)
                     .foregroundStyle(.secondary)
+                Text(detail)
+                    .font(VocalisTheme.caption)
+                    .foregroundStyle(.tertiary)
             }
             Spacer()
         }
