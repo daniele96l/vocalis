@@ -37,6 +37,8 @@ vocalis status   # config + permission summary
 
 Prefer `OPENAI_API_KEY` in the environment; the file key is a fallback. On first launch Vocalis may also discover a key from common local `.env` files on this machine and save it to config (never bundled into the DMG).
 
+**Never commit API keys.** They live only in `~/.config/vocalis/config.toml` (chmod 600) on each Mac — not in git, not in the DMG. `Scripts/check-no-secrets.sh` runs during DMG packaging.
+
 Legacy `~/.config/wispflow/config.toml` is migrated automatically on first load.
 
 ## Config

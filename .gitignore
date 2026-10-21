@@ -5,7 +5,15 @@ dist/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
+
+# Secrets / local credentials — never commit
 .env
 .env.*
 *.pem
+*_env.local
 config.toml
+**/config.toml
+usage.jsonl
+**/usage.jsonl
+*.key
+secrets/

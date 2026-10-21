@@ -5,8 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-chmod +x Scripts/package-app.sh
+chmod +x Scripts/package-app.sh Scripts/check-no-secrets.sh
 ./Scripts/package-app.sh release
+./Scripts/check-no-secrets.sh
 
 DIST="$ROOT/dist"
 STAGE="$DIST/dmg-stage"
