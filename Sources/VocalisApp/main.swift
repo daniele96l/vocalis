@@ -709,6 +709,7 @@ struct SettingsView: View {
     @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
+    @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
 
     private var keyConfigured: Bool { config.hasAPIKey }
 
@@ -800,13 +801,19 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Transcription is the expensive (and usually slowest) step. Cleanup adds a second API call — turn it Off for the snappiest paste, or keep gpt-4o-mini (auto-skips when the transcript already looks clean, times out to raw after 2.5s).")
+                        Text("Transcription is the expensive (and usually slowest) step. With live streaming on, Vocalis transcribes ~5s chunks while you hold so long messages mostly finish as you release. Same per-minute price — just parallel. Cleanup is a second call (Off = snappiest).")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
                         Text("Example ~10s hold with these models: \(exampleHoldCost)")
                             .font(.system(size: 13, weight: .medium))
+
+                        Toggle("Live transcription while holding", isOn: $streamingSTT)
+                            .toggleStyle(.switch)
+                            .onChange(of: streamingSTT) { enabled in
+                                saveStreaming(enabled)
+                            }
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Speech-to-text")
@@ -917,6 +924,7 @@ struct SettingsView: View {
             selectedCleanup = ModelCatalog.isCleanupEnabled(config.cleanupModel)
                 ? config.cleanupModel
                 : ModelCatalog.cleanupOff
+            streamingSTT = config.streamingSTT
             micDevices = MicDevices.listInputs()
             state.refresh(
                 permissions: nil,
@@ -953,6 +961,21 @@ struct SettingsView: View {
                 : "Cleanup model updated."
         } catch {
             state.statusMessage = "Could not save model."
+        }
+    }
+
+    private func saveStreaming(_ enabled: Bool) {
+        do {
+            var next = VocalisConfig.load()
+            next.streamingSTT = enabled
+            try next.save()
+            config = next
+            onModelsChanged()
+            state.statusMessage = enabled
+                ? "Live transcription on — chunks while you hold."
+                : "Live transcription off — one request on release."
+        } catch {
+            state.statusMessage = "Could not save setting."
         }
     }
 

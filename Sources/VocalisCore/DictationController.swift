@@ -11,6 +11,7 @@ public final class DictationController {
     private var errorHideTask: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
     private var holdTask: Task<Void, Never>?
+    private var liveTranscriber: LiveTranscriber?
 
     public var isHotkeyTapInstalled: Bool { hotkey.isTapInstalled }
     public var hotkeyStartError: String? { hotkey.lastStartError }
@@ -66,6 +67,11 @@ public final class DictationController {
         try config.save()
     }
 
+    public func setStreamingSTT(_ enabled: Bool) throws {
+        config.streamingSTT = enabled
+        try config.save()
+    }
+
     private func applyBinding(_ binding: HotkeyBinding) {
         hotkey.updateBinding(binding)
     }
@@ -79,6 +85,8 @@ public final class DictationController {
         holdTask?.cancel()
         holdTask = nil
         starting = false
+        liveTranscriber?.cancel()
+        liveTranscriber = nil
         stopMeter()
         hotkey.stop()
         recorder.releaseHardware()
@@ -89,8 +97,9 @@ public final class DictationController {
         guard !processing else { return }
         errorHideTask?.cancel()
         holdTask?.cancel()
+        liveTranscriber?.cancel()
+        liveTranscriber = nil
 
-        // Show UI immediately — before any await — so hold feels instant.
         bubble.show(.listening)
         bubble.updateMeter(
             level: 0,
@@ -113,15 +122,31 @@ public final class DictationController {
             guard !Task.isCancelled else { return }
 
             do {
+                if self.config.streamingSTT, self.config.hasAPIKey {
+                    let live = LiveTranscriber(client: OpenAIClient(config: self.config))
+                    self.liveTranscriber = live
+                    self.recorder.chunkSeconds = LiveTranscriber.defaultChunkSeconds
+                    self.recorder.onChunkSealed = { [weak live] url in
+                        live?.submit(url: url)
+                    }
+                } else {
+                    self.recorder.onChunkSealed = nil
+                    self.recorder.chunkSeconds = 0
+                }
+
                 try await self.recorder.start()
                 guard !Task.isCancelled else {
                     self.recorder.cancel()
+                    self.liveTranscriber?.cancel()
+                    self.liveTranscriber = nil
                     return
                 }
                 self.bubble.updateMeter(level: 0, micName: self.recorder.activeDeviceName)
                 self.startMeter()
             } catch {
                 guard !Task.isCancelled else { return }
+                self.liveTranscriber?.cancel()
+                self.liveTranscriber = nil
                 self.showError(self.shortError(error))
             }
         }
@@ -132,9 +157,10 @@ public final class DictationController {
         holdTask?.cancel()
         holdTask = nil
 
-        // If release happened before start finished, abort quietly.
         guard recorder.isRecording else {
             starting = false
+            liveTranscriber?.cancel()
+            liveTranscriber = nil
             if !processing {
                 bubble.hide()
             }
@@ -142,27 +168,50 @@ public final class DictationController {
         }
 
         processing = true
+        let live = liveTranscriber
+        liveTranscriber = nil
+        recorder.onChunkSealed = nil
+
+        let pending = live?.pendingCount ?? 0
         bubble.show(.transcribing)
+        if pending > 0 {
+            NSLog("Vocalis: finishing with \(pending) live STT chunk(s) already in flight")
+        }
 
         Task {
-            defer { processing = false }
+            defer {
+                processing = false
+                live?.cancel()
+            }
             do {
                 let audioURL = try recorder.stop()
-                defer { try? FileManager.default.removeItem(at: audioURL) }
 
                 guard config.hasAPIKey else {
+                    try? FileManager.default.removeItem(at: audioURL)
                     showError("Bad key")
                     return
                 }
 
                 let client = OpenAIClient(config: config)
-                let transcript = try await client.transcribe(audioURL: audioURL)
+                let transcriptText: String
+                if let live {
+                    // LiveTranscriber owns deletion of each chunk URL (including this final one).
+                    live.submit(url: audioURL)
+                    transcriptText = try await live.finishJoined()
+                    if transcriptText.isEmpty {
+                        throw OpenAIClientError.emptyTranscript
+                    }
+                } else {
+                    defer { try? FileManager.default.removeItem(at: audioURL) }
+                    transcriptText = try await client.transcribe(audioURL: audioURL).text
+                }
+
                 let text: String
                 if ModelCatalog.isCleanupEnabled(config.cleanupModel) {
                     bubble.show(.polishing)
-                    text = try await client.cleanup(text: transcript.text).text
+                    text = try await client.cleanup(text: transcriptText).text
                 } else {
-                    text = transcript.text
+                    text = transcriptText
                 }
                 try Paster.paste(text)
                 try? await Task.sleep(nanoseconds: 120_000_000)
@@ -181,7 +230,7 @@ public final class DictationController {
                 let level = self.recorder.currentLevel()
                 let name = self.recorder.activeDeviceName
                 self.bubble.updateMeter(level: level, micName: name)
-                try? await Task.sleep(nanoseconds: 40_000_000) // ~25 fps
+                try? await Task.sleep(nanoseconds: 40_000_000)
             }
         }
     }

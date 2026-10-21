@@ -20,17 +20,21 @@ public enum AudioRecorderError: LocalizedError {
 /// Captures mic audio for Whisper.
 /// Non-Bluetooth: AVAudioEngine on the system/default route (no CurrentDevice bind).
 /// Bluetooth (AirPods): AudioQueue — binding CurrentDevice on AVAudioEngine yields 0 buffers.
+/// Optional chunk rotation feeds live/parallel STT while the hotkey is held.
 @MainActor
 public final class AudioRecorder: NSObject {
     /// UID from config; empty = system default.
     public var preferredDeviceUID: String = ""
     public private(set) var activeDeviceName: String = MicDevices.displayName(forUID: "")
 
+    /// When > 0, sealed chunk WAVs are delivered via `onChunkSealed` during recording.
+    public var chunkSeconds: Double = LiveTranscriber.defaultChunkSeconds
+    public var onChunkSealed: ((URL) -> Void)?
+
     private var engine: AVAudioEngine?
     private var audioQueue: AudioQueueRef?
     private var queueBuffers: [AudioQueueBufferRef] = []
-    private var audioFile: AVAudioFile?
-    private var outputURL: URL?
+    private var writeTarget: ChunkWriteTarget?
     private var previousOutputUID: String?
     private var latestLevel: Float = 0
     private var isBluetoothSession = false
@@ -39,6 +43,7 @@ public final class AudioRecorder: NSObject {
     private var writeGain: Float = 1
     /// Keep AirPods HFP warm across dictations so the next hold starts instantly.
     private var keepBluetoothWarm = true
+    private var chunkTask: Task<Void, Never>?
 
     public var isRecording: Bool {
         if usingAudioQueue { return audioQueue != nil }
@@ -78,8 +83,6 @@ public final class AudioRecorder: NSObject {
         }
         // Tear down capture only — keep BT route warm so we do not miss first words.
         tearDownCapture(deleteFile: true)
-        outputURL = nil
-        latestLevel = 0
 
         let device = MicDevices.device(uid: preferredDeviceUID)
         let alreadyWarm = device?.isBluetooth == true
@@ -104,22 +107,23 @@ public final class AudioRecorder: NSObject {
         } else {
             try startEngine(device: device)
         }
+        startChunkTimerIfNeeded()
     }
 
     public func stop() throws -> URL {
-        guard let outputURL else { throw AudioRecorderError.notRecording }
+        guard writeTarget != nil else { throw AudioRecorderError.notRecording }
+        stopChunkTimer()
+        let url = writeTarget?.finish()
         tearDownCapture(deleteFile: false)
-        let url = outputURL
-        self.outputURL = nil
         latestLevel = 0
-        // Do not restore speakers here — keeps AirPods ready for the next hold.
+        guard let url else { throw AudioRecorderError.notRecording }
         NSLog("Vocalis: stopped after \(bufferCount) buffers")
         return url
     }
 
     public func cancel() {
+        stopChunkTimer()
         tearDownCapture(deleteFile: true)
-        outputURL = nil
         latestLevel = 0
         if !keepBluetoothWarm {
             finishBluetoothRoute()
@@ -129,13 +133,47 @@ public final class AudioRecorder: NSObject {
     /// Restore previous output (call on app quit).
     public func releaseHardware() {
         keepBluetoothWarm = false
+        stopChunkTimer()
         tearDownCapture(deleteFile: true)
-        outputURL = nil
         latestLevel = 0
         finishBluetoothRoute()
     }
 
     public func currentLevel() -> Float { latestLevel }
+
+    // MARK: - Chunking
+
+    private func startChunkTimerIfNeeded() {
+        stopChunkTimer()
+        guard chunkSeconds > 0.5, onChunkSealed != nil else { return }
+        let interval = chunkSeconds
+        chunkTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.sealCurrentChunkIfWorthwhile()
+                }
+            }
+        }
+    }
+
+    private func stopChunkTimer() {
+        chunkTask?.cancel()
+        chunkTask = nil
+    }
+
+    private func sealCurrentChunkIfWorthwhile() {
+        guard let writeTarget, let onChunkSealed else { return }
+        // Avoid sealing nearly-empty chunks (speech pause / startup).
+        guard writeTarget.currentDurationSeconds() >= max(1.2, chunkSeconds * 0.35) else { return }
+        do {
+            let sealed = try writeTarget.rotate()
+            onChunkSealed(sealed)
+        } catch {
+            NSLog("Vocalis: chunk rotate failed: \(error.localizedDescription)")
+        }
+    }
 
     // MARK: - Engine (wired / built-in)
 
@@ -143,8 +181,6 @@ public final class AudioRecorder: NSObject {
         let engine = AVAudioEngine()
         let input = engine.inputNode
 
-        // Do not bind CurrentDevice for Bluetooth (handled elsewhere). For explicit
-        // non-default wired mics, bind only when needed.
         if let device, !preferredDeviceUID.isEmpty {
             let currentDefault = MicDevices.defaultInput()?.coreAudioID
             if currentDefault != device.coreAudioID {
@@ -158,21 +194,19 @@ public final class AudioRecorder: NSObject {
             throw AudioRecorderError.setupFailed("Mic format unavailable — try Built-in mic")
         }
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vocalis-\(UUID().uuidString).wav")
         let writeFormat = try monoWriteFormat(from: hwFormat)
-        let file = try AVAudioFile(forWriting: url, settings: writeFormat.settings)
+        let target = try ChunkWriteTarget(format: writeFormat)
 
         let needsDownmix = writeFormat.channelCount != hwFormat.channelCount
             || writeFormat.commonFormat != hwFormat.commonFormat
         let converter = needsDownmix ? AVAudioConverter(from: hwFormat, to: writeFormat) : nil
-
         let gain = writeGain
+
         input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, _ in
             self?.handleEngineBuffer(
                 buffer,
                 converter: converter,
-                file: file,
+                target: target,
                 fileFormat: writeFormat,
                 writeGain: gain
             )
@@ -186,8 +220,7 @@ public final class AudioRecorder: NSObject {
         }
 
         self.engine = engine
-        self.audioFile = file
-        self.outputURL = url
+        self.writeTarget = target
         self.usingAudioQueue = false
         NSLog("Vocalis: engine recording on \(activeDeviceName) @ \(Int(hwFormat.sampleRate)) Hz")
     }
@@ -210,8 +243,6 @@ public final class AudioRecorder: NSObject {
             mReserved: 0
         )
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vocalis-\(UUID().uuidString).wav")
         guard let writeFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
@@ -220,9 +251,9 @@ public final class AudioRecorder: NSObject {
         ) else {
             throw AudioRecorderError.setupFailed("Mic format failed")
         }
-        let file = try AVAudioFile(forWriting: url, settings: writeFormat.settings)
+        let target = try ChunkWriteTarget(format: writeFormat)
 
-        let context = QueueContext(owner: self, file: file, writeGain: writeGain)
+        let context = QueueContext(owner: self, target: target, writeGain: writeGain)
         var queue: AudioQueueRef?
         let status = AudioQueueNewInput(
             &asbd,
@@ -241,7 +272,6 @@ public final class AudioRecorder: NSObject {
             throw AudioRecorderError.setupFailed("Mic queue failed (\(status))")
         }
 
-        // Prefer explicit AirPods input UID; else whatever is system default.
         let uid = device?.uid
             ?? MicDevices.defaultInput()?.uid
             ?? ""
@@ -274,13 +304,11 @@ public final class AudioRecorder: NSObject {
             throw AudioRecorderError.setupFailed("Mic queue start failed")
         }
 
-        // Keep context alive for the lifetime of the queue.
         objc_setAssociatedObject(self, &AssociatedKeys.queueContext, context, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
         self.audioQueue = queue
         self.queueBuffers = kept
-        self.audioFile = file
-        self.outputURL = url
+        self.writeTarget = target
         self.usingAudioQueue = true
         NSLog(
             "Vocalis: AudioQueue recording on \(activeDeviceName) @ \(Int(sampleRate)) Hz (Bluetooth)"
@@ -304,12 +332,13 @@ public final class AudioRecorder: NSObject {
         queueBuffers = []
         objc_setAssociatedObject(self, &AssociatedKeys.queueContext, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
-        audioFile = nil
-        if deleteFile, let outputURL {
-            try? FileManager.default.removeItem(at: outputURL)
+        if deleteFile, let url = writeTarget?.finish() {
+            try? FileManager.default.removeItem(at: url)
         }
+        writeTarget = nil
         usingAudioQueue = false
         bufferCount = 0
+        latestLevel = 0
     }
 
     private func finishBluetoothRoute() {
@@ -355,12 +384,11 @@ public final class AudioRecorder: NSObject {
     nonisolated private func handleEngineBuffer(
         _ buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter?,
-        file: AVAudioFile,
+        target: ChunkWriteTarget,
         fileFormat: AVAudioFormat,
         writeGain: Float
     ) {
         let level = Self.displayLevel(fromFloatBuffer: buffer)
-        let gain = writeGain
         Task { @MainActor in
             self.latestLevel = level
             self.bufferCount += 1
@@ -388,17 +416,17 @@ public final class AudioRecorder: NSObject {
             toWrite = buffer
         }
 
-        if gain != 1, let gained = Self.gainedCopy(toWrite, gain: gain) {
-            try? file.write(from: gained)
+        if writeGain != 1, let gained = Self.gainedCopy(toWrite, gain: writeGain) {
+            target.write(gained)
         } else {
-            try? file.write(from: toWrite)
+            target.write(toWrite)
         }
     }
 
     fileprivate nonisolated func handleQueueBuffer(
         _ audioData: UnsafeMutableRawPointer,
         byteSize: UInt32,
-        file: AVAudioFile,
+        target: ChunkWriteTarget,
         writeGain: Float
     ) {
         let frames = Int(byteSize) / MemoryLayout<Float>.size
@@ -422,7 +450,7 @@ public final class AudioRecorder: NSObject {
 
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: file.fileFormat.sampleRate,
+            sampleRate: target.sampleRate,
             channels: 1,
             interleaved: true
         ), let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else {
@@ -434,10 +462,9 @@ public final class AudioRecorder: NSObject {
                 dst[i] = max(-1, min(1, samples[i] * writeGain))
             }
         }
-        try? file.write(from: buf)
+        target.write(buf)
     }
 
-    /// AirPods HFP peaks are often tiny — scale so the meter moves.
     nonisolated private static func displayLevel(fromFloatBuffer buffer: AVAudioPCMBuffer) -> Float {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return 0 }
@@ -481,12 +508,12 @@ private enum AssociatedKeys {
 
 private final class QueueContext: @unchecked Sendable {
     weak var owner: AudioRecorder?
-    let file: AVAudioFile
+    let target: ChunkWriteTarget
     let writeGain: Float
 
-    init(owner: AudioRecorder, file: AVAudioFile, writeGain: Float) {
+    init(owner: AudioRecorder, target: ChunkWriteTarget, writeGain: Float) {
         self.owner = owner
-        self.file = file
+        self.target = target
         self.writeGain = writeGain
     }
 
@@ -496,7 +523,7 @@ private final class QueueContext: @unchecked Sendable {
             owner?.handleQueueBuffer(
                 buffer.pointee.mAudioData,
                 byteSize: byteSize,
-                file: file,
+                target: target,
                 writeGain: writeGain
             )
         }

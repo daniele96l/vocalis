@@ -8,12 +8,15 @@ public struct VocalisConfig: Equatable, Sendable {
     public var hotkey: String
     /// Core Audio device UID; empty = system default input.
     public var inputDeviceID: String
+    /// Transcribe ~5s chunks while holding so long dictations finish faster on release.
+    public var streamingSTT: Bool
 
     public static let defaultBaseURL = "https://api.openai.com/v1"
     /// Cheapest widely available file STT; override in Settings anytime.
     public static let defaultSTTModel = "gpt-4o-mini-transcribe"
     public static let defaultCleanupModel = "gpt-4o-mini"
     public static let defaultHotkey = "rightOption"
+    public static let defaultStreamingSTT = true
 
     public static var configDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -40,7 +43,8 @@ public struct VocalisConfig: Equatable, Sendable {
         sttModel: String = defaultSTTModel,
         cleanupModel: String = defaultCleanupModel,
         hotkey: String = defaultHotkey,
-        inputDeviceID: String = ""
+        inputDeviceID: String = "",
+        streamingSTT: Bool = defaultStreamingSTT
     ) {
         self.openaiAPIKey = openaiAPIKey
         self.baseURL = baseURL
@@ -48,6 +52,7 @@ public struct VocalisConfig: Equatable, Sendable {
         self.cleanupModel = cleanupModel
         self.hotkey = hotkey
         self.inputDeviceID = inputDeviceID
+        self.streamingSTT = streamingSTT
     }
 
     /// Env `OPENAI_API_KEY` (or `AI_GATEWAY_API_KEY`) wins over file key.
@@ -84,6 +89,7 @@ public struct VocalisConfig: Equatable, Sendable {
         cleanup_model = "\(cleanupModel)"
         hotkey = "\(hotkey)"
         input_device_id = "\(inputDeviceID)"
+        streaming_stt = "\(streamingSTT)"
         """
         try body.write(to: Self.configFileURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.configFileURL.path)
@@ -112,6 +118,9 @@ public struct VocalisConfig: Equatable, Sendable {
             case "cleanup_model": config.cleanupModel = value.isEmpty ? defaultCleanupModel : value
             case "hotkey": config.hotkey = value.isEmpty ? defaultHotkey : value
             case "input_device_id": config.inputDeviceID = value
+            case "streaming_stt":
+                let v = value.lowercased()
+                config.streamingSTT = !(v == "false" || v == "0" || v == "no" || v == "off")
             default: break
             }
         }
