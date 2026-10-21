@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "WispFlow",
+    name: "Vocalis",
     platforms: [.macOS(.v13)],
     products: [
         // NOTE: macOS default FS is case-insensitive — do not name products
-        // "WispFlow" and "wispflow" or they overwrite each other.
-        .executable(name: "WispFlow", targets: ["WispFlowApp"]),
-        .executable(name: "wispflow-cli", targets: ["WispFlowCLI"]),
-        .library(name: "WispFlowCore", targets: ["WispFlowCore"]),
+        // "Vocalis" and "vocalis" or they overwrite each other.
+        .executable(name: "Vocalis", targets: ["VocalisApp"]),
+        .executable(name: "vocalis-cli", targets: ["VocalisCLI"]),
+        .library(name: "VocalisCore", targets: ["VocalisCore"]),
     ],
     targets: [
         .target(
-            name: "WispFlowCore",
-            path: "Sources/WispFlowCore",
+            name: "VocalisCore",
+            path: "Sources/VocalisCore",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("AVFoundation"),
@@ -22,14 +22,14 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "WispFlowApp",
-            dependencies: ["WispFlowCore"],
-            path: "Sources/WispFlowApp"
+            name: "VocalisApp",
+            dependencies: ["VocalisCore"],
+            path: "Sources/VocalisApp"
         ),
         .executableTarget(
-            name: "WispFlowCLI",
-            dependencies: ["WispFlowCore"],
-            path: "Sources/WispFlowCLI"
+            name: "VocalisCLI",
+            dependencies: ["VocalisCore"],
+            path: "Sources/VocalisCLI"
         ),
     ]
 )

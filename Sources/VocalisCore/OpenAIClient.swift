@@ -25,10 +25,10 @@ public final class OpenAIClient: Sendable {
     You clean dictated speech. Fix typos, punctuation, and casing. Keep the speaker’s meaning and language. Do not add preamble or quotes. Output only the cleaned text.
     """
 
-    private let config: WispFlowConfig
+    private let config: VocalisConfig
     private let session: URLSession
 
-    public init(config: WispFlowConfig, session: URLSession = .shared) {
+    public init(config: VocalisConfig, session: URLSession = .shared) {
         self.config = config
         self.session = session
     }

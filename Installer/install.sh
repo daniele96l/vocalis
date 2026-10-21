@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# WispFlow local install — build from source and place app + CLI.
+# Vocalis local install — build from source and place app + CLI.
 set -euo pipefail
 
-REPO_DEFAULT="https://github.com/daniele96l/wispflow.git"
-PREFIX="${WISPFLOW_PREFIX:-$HOME/.local}"
-APP_DIR="${WISPFLOW_APP_DIR:-$HOME/Applications}"
+REPO_DEFAULT="https://github.com/daniele96l/vocalis.git"
+PREFIX="${VOCALIS_PREFIX:-$HOME/.local}"
+APP_DIR="${VOCALIS_APP_DIR:-$HOME/Applications}"
 BIN_DIR="$PREFIX/bin"
 
-echo "==> WispFlow install"
+echo "==> Vocalis install"
 echo "    prefix: $PREFIX"
 echo "    apps:   $APP_DIR"
 
@@ -16,7 +16,7 @@ if ! command -v swift >/dev/null 2>&1; then
   exit 1
 fi
 
-# If we're already inside a wispflow checkout, build here; else clone to a temp/cache dir.
+# If we're already inside a vocalis checkout, build here; else clone to a temp/cache dir.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -24,7 +24,7 @@ if [[ -f "$ROOT/Package.swift" ]]; then
   SRC="$ROOT"
   echo "==> Building from $SRC"
 else
-  SRC="${WISPFLOW_SRC:-$HOME/.cache/wispflow/src}"
+  SRC="${VOCALIS_SRC:-$HOME/.cache/vocalis/src}"
   mkdir -p "$(dirname "$SRC")"
   if [[ -d "$SRC/.git" ]]; then
     echo "==> Updating $SRC"
@@ -40,18 +40,19 @@ chmod +x Scripts/package-app.sh Installer/install.sh
 ./Scripts/package-app.sh release
 
 mkdir -p "$APP_DIR" "$BIN_DIR"
-rm -rf "$APP_DIR/WispFlow.app"
-cp -R .build/WispFlow.app "$APP_DIR/WispFlow.app"
-cp .build/wispflow "$BIN_DIR/wispflow"
-chmod +x "$BIN_DIR/wispflow"
+rm -rf "$APP_DIR/Vocalis.app" "$APP_DIR/WispFlow.app"
+cp -R .build/Vocalis.app "$APP_DIR/Vocalis.app"
+cp .build/vocalis "$BIN_DIR/vocalis"
+chmod +x "$BIN_DIR/vocalis"
+rm -f "$BIN_DIR/wispflow" "$BIN_DIR/WispFlow.app" 2>/dev/null || true
 
-# Convenience: also keep a pointer so `wispflow start` finds the app
-ln -sfn "$APP_DIR/WispFlow.app" "$BIN_DIR/WispFlow.app" 2>/dev/null || true
+# Convenience: also keep a pointer so `vocalis start` finds the app
+ln -sfn "$APP_DIR/Vocalis.app" "$BIN_DIR/Vocalis.app" 2>/dev/null || true
 
 echo ""
 echo "==> Installed"
-echo "    App: $APP_DIR/WispFlow.app"
-echo "    CLI: $BIN_DIR/wispflow"
+echo "    App: $APP_DIR/Vocalis.app"
+echo "    CLI: $BIN_DIR/vocalis"
 echo ""
 if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
   echo "Add to your shell profile:"
@@ -59,8 +60,8 @@ if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
   echo ""
 fi
 echo "Next:"
-echo "  wispflow setup"
-echo "  wispflow start"
+echo "  vocalis setup"
+echo "  vocalis start"
 echo ""
 echo "Then grant Microphone + Accessibility when prompted."
 echo "Hold Right Option to dictate (or Ctrl+Shift+Space if configured)."

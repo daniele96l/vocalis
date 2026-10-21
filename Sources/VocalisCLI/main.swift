@@ -1,8 +1,8 @@
 import Foundation
-import WispFlowCore
+import VocalisCore
 
 @main
-enum WispFlowCLI {
+enum VocalisCLI {
     static func main() async {
         let args = Array(CommandLine.arguments.dropFirst())
         let command = args.first ?? "help"
@@ -26,13 +26,13 @@ enum WispFlowCLI {
     static func printHelp() {
         print(
             """
-            wispflow — macOS dictation (Whisper → cleanup → paste)
+            vocalis — macOS dictation (Whisper → cleanup → paste)
 
             Usage:
-              wispflow setup     Prompt for OpenAI API key; write ~/.config/wispflow/config.toml
-              wispflow start     Launch the WispFlow menubar app
-              wispflow status    Show config + permission summary
-              wispflow help      Show this help
+              vocalis setup     Prompt for OpenAI API key; write ~/.config/vocalis/config.toml
+              vocalis start     Launch the Vocalis menubar app
+              vocalis status    Show config + permission summary
+              vocalis help      Show this help
 
             Env:
               OPENAI_API_KEY     Preferred over config file key
@@ -45,9 +45,9 @@ enum WispFlowCLI {
     }
 
     static func setup() async {
-        var config = WispFlowConfig.load()
-        print("WispFlow setup")
-        print("Config path: \(WispFlowConfig.configFileURL.path)")
+        var config = VocalisConfig.load()
+        print("Vocalis setup")
+        print("Config path: \(VocalisConfig.configFileURL.path)")
         print("")
 
         if let existing = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !existing.isEmpty {
@@ -93,7 +93,7 @@ enum WispFlowCLI {
         do {
             try config.save()
             print("")
-            print("Wrote \(WispFlowConfig.configFileURL.path) (chmod 600)")
+            print("Wrote \(VocalisConfig.configFileURL.path) (chmod 600)")
             if !config.hasAPIKey {
                 print("Warning: no API key in file or env. Set OPENAI_API_KEY or re-run setup.")
             }
@@ -133,7 +133,7 @@ enum WispFlowCLI {
         }
         fputs(
             """
-            Could not find WispFlow.app. Build/install first:
+            Could not find Vocalis.app. Build/install first:
               ./Installer/install.sh
             or:
               swift build -c release
@@ -145,7 +145,7 @@ enum WispFlowCLI {
     }
 
     static func status() {
-        let config = WispFlowConfig.load()
+        let config = VocalisConfig.load()
         let keySource: String = {
             if let env = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !env.isEmpty {
                 return "env OPENAI_API_KEY"
@@ -157,9 +157,9 @@ enum WispFlowCLI {
             return "missing"
         }()
 
-        print("WispFlow status")
-        print("  config:     \(WispFlowConfig.configFileURL.path)")
-        print("  config exists: \(FileManager.default.fileExists(atPath: WispFlowConfig.configFileURL.path))")
+        print("Vocalis status")
+        print("  config:     \(VocalisConfig.configFileURL.path)")
+        print("  config exists: \(FileManager.default.fileExists(atPath: VocalisConfig.configFileURL.path))")
         print("  api key:    \(keySource)")
         print("  base_url:   \(config.baseURL)")
         print("  stt_model:  \(config.sttModel)")
@@ -176,22 +176,22 @@ enum WispFlowCLI {
     static func appCandidates() -> [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var paths = [
-            "/Applications/WispFlow.app",
-            "\(home)/Applications/WispFlow.app",
-            "\(home)/Developer/wispflow/.build/WispFlow.app",
-            "\(home)/Developer/wispflow/.build/release/WispFlow",
-            "\(home)/Developer/wispflow/.build/debug/WispFlow",
+            "/Applications/Vocalis.app",
+            "\(home)/Applications/Vocalis.app",
+            "\(home)/Developer/vocalis/.build/Vocalis.app",
+            "\(home)/Developer/vocalis/.build/release/Vocalis",
+            "\(home)/Developer/vocalis/.build/debug/Vocalis",
         ]
-        // Relative to this binary (when installed as ~/.local/bin/wispflow sibling to app)
+        // Relative to this binary (when installed as ~/.local/bin/vocalis sibling to app)
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let binDir = exe.deletingLastPathComponent()
-        paths.insert(binDir.appendingPathComponent("WispFlow.app").path, at: 0)
-        paths.insert(binDir.deletingLastPathComponent().appendingPathComponent("WispFlow.app").path, at: 1)
+        paths.insert(binDir.appendingPathComponent("Vocalis.app").path, at: 0)
+        paths.insert(binDir.deletingLastPathComponent().appendingPathComponent("Vocalis.app").path, at: 1)
         // Also try swift build products next to package
         if let cwd = FileManager.default.currentDirectoryPath as String? {
-            paths.append("\(cwd)/.build/WispFlow.app")
-            paths.append("\(cwd)/.build/release/WispFlow")
-            paths.append("\(cwd)/.build/debug/WispFlow")
+            paths.append("\(cwd)/.build/Vocalis.app")
+            paths.append("\(cwd)/.build/release/Vocalis")
+            paths.append("\(cwd)/.build/debug/Vocalis")
         }
         return paths
     }

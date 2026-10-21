@@ -48,7 +48,7 @@ public final class HotkeyMonitor {
             },
             userInfo: refcon
         ) else {
-            NSLog("WispFlow: failed to create event tap (grant Accessibility / Input Monitoring)")
+            NSLog("Vocalis: failed to create event tap (grant Accessibility / Input Monitoring)")
             return
         }
 

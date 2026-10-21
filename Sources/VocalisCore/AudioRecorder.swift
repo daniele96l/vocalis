@@ -36,7 +36,7 @@ public final class AudioRecorder: NSObject {
         }
 
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wispflow-\(UUID().uuidString).m4a")
+            .appendingPathComponent("vocalis-\(UUID().uuidString).m4a")
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 16_000,

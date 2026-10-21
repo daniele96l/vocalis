@@ -1,8 +1,11 @@
 .DS_Store
 .build/
 .swiftpm/
+dist/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
 .env
+.env.*
 *.pem
+config.toml

@@ -4,12 +4,12 @@ import Foundation
 public final class DictationController {
     public let bubble = BubbleOverlayController()
     public let recorder = AudioRecorder()
-    public private(set) var config: WispFlowConfig
+    public private(set) var config: VocalisConfig
     private var hotkey: HotkeyMonitor
     private var processing = false
     private var errorHideTask: Task<Void, Never>?
 
-    public init(config: WispFlowConfig = .load()) {
+    public init(config: VocalisConfig = .load()) {
         self.config = config
         let mode = HotkeyMode(rawValue: config.hotkey) ?? .rightOption
         self.hotkey = HotkeyMonitor(mode: mode)
