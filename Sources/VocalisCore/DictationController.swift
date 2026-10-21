@@ -76,8 +76,13 @@ public final class DictationController {
             }
             do {
                 recorder.preferredDeviceUID = config.inputDeviceID
-                try recorder.start()
+                // Show bubble immediately so AirPods settle delay still feels responsive.
                 bubble.show(.listening)
+                bubble.updateMeter(
+                    level: 0,
+                    micName: MicDevices.displayName(forUID: config.inputDeviceID)
+                )
+                try await recorder.start()
                 bubble.updateMeter(level: 0, micName: recorder.activeDeviceName)
                 startMeter()
             } catch {

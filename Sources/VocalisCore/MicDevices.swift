@@ -7,12 +7,13 @@ public struct MicDevice: Equatable, Identifiable, Sendable {
     public var uid: String
     public var name: String
     public var coreAudioID: AudioDeviceID
+    public var isBluetooth: Bool
 
     public static let systemDefaultUID = ""
 }
 
 public enum MicDevices {
-    /// Built-in / USB / aggregate input devices.
+    /// Built-in / USB / Bluetooth / aggregate input devices.
     public static func listInputs() -> [MicDevice] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -46,14 +47,136 @@ public enum MicDevices {
             let name = stringProperty(id, kAudioDevicePropertyDeviceNameCFString)
                 ?? stringProperty(id, kAudioObjectPropertyName)
                 ?? "Microphone \(id)"
-            result.append(MicDevice(uid: uid, name: name, coreAudioID: id))
+            result.append(
+                MicDevice(
+                    uid: uid,
+                    name: name,
+                    coreAudioID: id,
+                    isBluetooth: isBluetoothTransport(id)
+                )
+            )
         }
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     public static func defaultInput() -> MicDevice? {
+        guard let id = defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice) else {
+            return nil
+        }
+        let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) ?? ""
+        let name = stringProperty(id, kAudioDevicePropertyDeviceNameCFString)
+            ?? stringProperty(id, kAudioObjectPropertyName)
+            ?? "System default"
+        return MicDevice(uid: uid, name: name, coreAudioID: id, isBluetooth: isBluetoothTransport(id))
+    }
+
+    public static func device(uid: String) -> MicDevice? {
+        if uid.isEmpty { return defaultInput() }
+        return listInputs().first { $0.uid == uid }
+    }
+
+    public static func displayName(forUID uid: String) -> String {
+        if uid.isEmpty {
+            if let def = defaultInput() { return "System default (\(def.name))" }
+            return "System default"
+        }
+        guard let device = device(uid: uid) else {
+            return "Missing mic — using system default"
+        }
+        return device.isBluetooth ? "\(device.name) (Bluetooth)" : device.name
+    }
+
+    public static func nominalSampleRate(uid: String) -> Double {
+        guard let device = device(uid: uid) else { return 48_000 }
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate: Float64 = 48_000
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(device.coreAudioID, &address, 0, nil, &size, &rate) == noErr else {
+            return 48_000
+        }
+        return rate > 0 ? rate : 48_000
+    }
+
+    /// Activate the chosen input. For Bluetooth (AirPods), also route default *output*
+    /// to the same device so macOS switches into headset/HFP mode — otherwise the
+    /// mic often stays silent while A2DP playback is active.
+    @discardableResult
+    public static func activateInput(uid: String) -> (ok: Bool, previousOutputUID: String?) {
+        let target = device(uid: uid)
+        guard let target else { return (true, nil) }
+
+        let okIn = setDefaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice, id: target.coreAudioID)
+        var previousOutUID: String?
+
+        if target.isBluetooth {
+            if let currentOut = defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice) {
+                previousOutUID = stringProperty(currentOut, kAudioDevicePropertyDeviceUID)
+            }
+            // Prefer matching AirPods output endpoint if this UID is input-only.
+            let outID = matchingOutputDeviceID(forInput: target) ?? target.coreAudioID
+            _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: outID)
+        }
+
+        if !okIn {
+            NSLog("Vocalis: failed to set input device \(target.uid)")
+        }
+        return (okIn, previousOutUID)
+    }
+
+    public static func restoreDefaultOutput(uid: String?) {
+        guard let uid, !uid.isEmpty,
+              let id = listAllDeviceIDs().first(where: {
+                  stringProperty($0, kAudioDevicePropertyDeviceUID) == uid
+              }) else { return }
+        _ = setDefaultDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, id: id)
+    }
+
+    @discardableResult
+    public static func setDefaultInput(uid: String) -> Bool {
+        activateInput(uid: uid).ok
+    }
+
+    // MARK: - Private
+
+    private static func matchingOutputDeviceID(forInput device: MicDevice) -> AudioDeviceID? {
+        // AirPods often expose separate input/output objects that share a name prefix.
+        let base = device.name
+            .replacingOccurrences(of: " Microphone", with: "")
+            .replacingOccurrences(of: " Mic", with: "")
+        for id in listAllDeviceIDs() {
+            guard outputChannelCount(id) > 0 else { continue }
+            let name = stringProperty(id, kAudioDevicePropertyDeviceNameCFString)
+                ?? stringProperty(id, kAudioObjectPropertyName)
+                ?? ""
+            if name == device.name || name.hasPrefix(base) || base.hasPrefix(name) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    private static func isBluetoothTransport(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport) == noErr else {
+            return false
+        }
+        return transport == kAudioDeviceTransportTypeBluetooth
+            || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    private static func defaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -67,57 +190,66 @@ public enum MicDevices {
             &size,
             &deviceID
         ) == noErr, deviceID != kAudioObjectUnknown else { return nil }
-
-        let uid = stringProperty(deviceID, kAudioDevicePropertyDeviceUID) ?? ""
-        let name = stringProperty(deviceID, kAudioDevicePropertyDeviceNameCFString)
-            ?? stringProperty(deviceID, kAudioObjectPropertyName)
-            ?? "System default"
-        return MicDevice(uid: uid, name: name, coreAudioID: deviceID)
+        return deviceID
     }
 
-    public static func device(uid: String) -> MicDevice? {
-        if uid.isEmpty { return defaultInput() }
-        return listInputs().first { $0.uid == uid }
-    }
-
-    public static func displayName(forUID uid: String) -> String {
-        if uid.isEmpty {
-            if let def = defaultInput() { return "System default (\(def.name))" }
-            return "System default"
-        }
-        return device(uid: uid)?.name ?? "Missing mic — using system default"
-    }
-
-    /// Point the system default input at this device so AVAudioRecorder uses it.
-    @discardableResult
-    public static func setDefaultInput(uid: String) -> Bool {
-        guard !uid.isEmpty, let device = device(uid: uid) else { return true }
+    private static func setDefaultDevice(selector: AudioObjectPropertySelector, id: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var deviceID = device.coreAudioID
+        var deviceID = id
         let size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioObjectSetPropertyData(
+        return AudioObjectSetPropertyData(
             AudioObjectID(kAudioObjectSystemObject),
             &address,
             0,
             nil,
             size,
             &deviceID
+        ) == noErr
+    }
+
+    private static func listAllDeviceIDs() -> [AudioDeviceID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
         )
-        if status != noErr {
-            NSLog("Vocalis: failed to set input device \(uid) (err \(status))")
-            return false
-        }
-        return true
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize
+        ) == noErr else { return [] }
+        let count = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize,
+            &deviceIDs
+        ) == noErr else { return [] }
+        return deviceIDs
     }
 
     private static func inputChannelCount(_ deviceID: AudioDeviceID) -> Int {
+        channelCount(deviceID, scope: kAudioDevicePropertyScopeInput)
+    }
+
+    private static func outputChannelCount(_ deviceID: AudioDeviceID) -> Int {
+        channelCount(deviceID, scope: kAudioDevicePropertyScopeOutput)
+    }
+
+    private static func channelCount(_ deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeInput,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
         var dataSize: UInt32 = 0
@@ -146,10 +278,6 @@ public enum MicDevices {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var dataSize: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize) == noErr else {
-            return nil
-        }
         var cfName: CFString? = nil
         var size = UInt32(MemoryLayout<CFString?>.size)
         let status = withUnsafeMutablePointer(to: &cfName) { ptr in

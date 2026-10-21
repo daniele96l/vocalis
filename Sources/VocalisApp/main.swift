@@ -733,7 +733,7 @@ struct SettingsView: View {
                 sectionLabel("Microphone")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Used while you hold the hotkey. The listening bubble shows a live waveform so you can tell if this mic hears you.")
+                        Text("Used while you hold the hotkey. The listening meter moves when this mic hears you. Bluetooth (AirPods) may take half a second to connect.")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -741,7 +741,8 @@ struct SettingsView: View {
                         Picker("Input", selection: $selectedMicUID) {
                             Text("System default").tag("")
                             ForEach(micDevices) { device in
-                                Text(device.name).tag(device.uid)
+                                Text(device.isBluetooth ? "\(device.name) (Bluetooth)" : device.name)
+                                    .tag(device.uid)
                             }
                         }
                         .labelsHidden()
