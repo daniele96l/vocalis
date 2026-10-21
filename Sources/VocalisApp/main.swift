@@ -121,7 +121,9 @@ struct HideFocusRing: ViewModifier {
 
 enum AppTab: String, CaseIterable, Identifiable {
     case home = "Home"
-    case settings = "Settings"
+    case ai = "AI"
+    case languages = "Languages"
+    case usage = "Usage"
     case setup = "Setup"
 
     var id: String { rawValue }
@@ -193,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             syncAppState()
 
             if CommandLine.arguments.contains("--settings") {
-                openMain(tab: .settings)
+                openMain(tab: .ai)
             } else if CommandLine.arguments.contains("--permissions") {
                 openMain(tab: .setup)
             } else if CommandLine.arguments.contains("--home") {
@@ -299,9 +301,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         home.target = self
         menu.addItem(home)
 
-        let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
-        settings.target = self
-        menu.addItem(settings)
+        let ai = NSMenuItem(title: "AI Settings…", action: #selector(showAI), keyEquivalent: ",")
+        ai.target = self
+        menu.addItem(ai)
+
+        let languages = NSMenuItem(title: "Languages…", action: #selector(showLanguages), keyEquivalent: "")
+        languages.target = self
+        menu.addItem(languages)
+
+        let usage = NSMenuItem(title: "Usage…", action: #selector(showUsage), keyEquivalent: "")
+        usage.target = self
+        menu.addItem(usage)
 
         let perm = NSMenuItem(title: "Setup / Permissions…", action: #selector(showPermissions), keyEquivalent: "")
         perm.target = self
@@ -323,7 +333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showHome() { openMain(tab: .home) }
-    @objc private func showSettings() { openMain(tab: .settings) }
+    @objc private func showAI() { openMain(tab: .ai) }
+    @objc private func showLanguages() { openMain(tab: .languages) }
+    @objc private func showUsage() { openMain(tab: .usage) }
     @objc private func showPermissions() { openMain(tab: .setup) }
 
     @objc private func quit() {
@@ -339,7 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !snap.allCriticalGranted || !snap.inputMonitoring {
             openMain(tab: .setup)
         } else if !VocalisConfig.load().hasAPIKey {
-            openMain(tab: .settings)
+            openMain(tab: .ai)
         } else {
             openMain(tab: .home)
         }
@@ -549,50 +561,69 @@ struct RootView: View {
                     case .home:
                         HomeView(
                             state: state,
-                            onGoSettings: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .settings } },
-                            onGoSetup: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .setup } },
+                            onGoAI: { go(.ai) },
+                            onGoUsage: { go(.usage) },
+                            onGoSetup: { go(.setup) },
                             onRefresh: onRefresh
                         )
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .offset(y: 6)),
-                            removal: .opacity
-                        ))
-                    case .settings:
-                        SettingsView(
+                        .transition(tabTransition)
+                    case .ai:
+                        AISettingsView(
                             state: state,
                             onHotkeyChanged: onHotkeyChanged,
                             onSavedKey: onSavedKey,
                             onInputDeviceChanged: onInputDeviceChanged,
                             onModelsChanged: onModelsChanged,
-                            onGoSetup: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .setup } },
-                            onGoHome: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .home } }
+                            onGoSetup: { go(.setup) },
+                            onGoHome: { go(.home) }
                         )
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .offset(y: 6)),
-                            removal: .opacity
-                        ))
+                        .transition(tabTransition)
+                    case .languages:
+                        LanguagesSettingsView(
+                            state: state,
+                            onModelsChanged: onModelsChanged,
+                            onGoHome: { go(.home) }
+                        )
+                        .transition(tabTransition)
+                    case .usage:
+                        UsageSettingsView(
+                            state: state,
+                            onGoHome: { go(.home) },
+                            onRefresh: onRefresh
+                        )
+                        .transition(tabTransition)
                     case .setup:
                         OnboardingView(
                             permissions: permissions,
                             state: state,
-                            onGoHome: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .home } },
-                            onGoSettings: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .settings } }
+                            onGoHome: { go(.home) },
+                            onGoAI: { go(.ai) }
                         )
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .offset(y: 6)),
-                            removal: .opacity
-                        ))
+                        .transition(tabTransition)
                     }
                 }
                 .animation(.spring(response: 0.38, dampingFraction: 0.88), value: nav.tab)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .frame(width: 500, height: 640)
+        .frame(width: 540, height: 640)
         .onAppear { onRefresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             onRefresh()
         }
+    }
+
+    private func go(_ tab: AppTab) {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+            nav.tab = tab
+        }
+    }
+
+    private var tabTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 6)),
+            removal: .opacity
+        )
     }
 }
 
@@ -601,7 +632,7 @@ struct TabStrip: View {
     @Namespace private var tabNS
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(AppTab.allCases) { tab in
                 Button {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
@@ -609,9 +640,9 @@ struct TabStrip: View {
                     }
                 } label: {
                     Text(tab.rawValue)
-                        .font(.system(size: 13, weight: selection == tab ? .semibold : .regular))
+                        .font(.system(size: 12, weight: selection == tab ? .semibold : .regular))
                         .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 9)
                         .padding(.vertical, 7)
                         .contentShape(Rectangle())
                         .overlay(alignment: .bottom) {
@@ -647,7 +678,8 @@ struct TabStrip: View {
 
 struct HomeView: View {
     @ObservedObject var state: AppState
-    var onGoSettings: () -> Void
+    var onGoAI: () -> Void
+    var onGoUsage: () -> Void
     var onGoSetup: () -> Void
     var onRefresh: () -> Void
 
@@ -686,13 +718,13 @@ struct HomeView: View {
 
                 thinRule
 
-                HoverRow(action: onGoSettings) {
+                HoverRow(action: onGoAI) {
                     statusLine(
                         ok: state.keyConfigured,
                         title: state.keyConfigured ? "API keys ready" : "API key missing",
                         detail: state.keyConfigured
                             ? "OpenAI and/or xAI keys stored on this Mac."
-                            : "Add OpenAI and/or xAI keys in Settings."
+                            : "Add OpenAI and/or xAI keys in AI."
                     )
                 }
 
@@ -701,11 +733,17 @@ struct HomeView: View {
                 HStack(alignment: .top) {
                     metaBlock(title: "Hotkey", value: state.hotkeyLabel)
                     Spacer(minLength: 12)
-                    metaBlock(
-                        title: "Usage today",
-                        value: state.usageToday,
-                        detail: state.usageTodaySplit
-                    )
+                    Button(action: onGoUsage) {
+                        metaBlock(
+                            title: "Usage today",
+                            value: state.usageToday,
+                            detail: state.usageTodaySplit
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .modifier(HideFocusRing())
                 }
                 .padding(.vertical, 12)
 
@@ -729,8 +767,10 @@ struct HomeView: View {
             .padding(.horizontal, 2)
 
             HStack(spacing: 8) {
-                Button("API key & hotkey") { onGoSettings() }
+                Button("AI settings") { onGoAI() }
                     .buttonStyle(AccentButtonStyle())
+                Button("Usage") { onGoUsage() }
+                    .buttonStyle(QuietButtonStyle())
                 Button("Permissions") { onGoSetup() }
                     .buttonStyle(QuietButtonStyle())
                 Spacer()
@@ -840,9 +880,9 @@ struct HomeIdleWave: View {
     }
 }
 
-// MARK: - Settings
+// MARK: - AI Settings
 
-struct SettingsView: View {
+struct AISettingsView: View {
     @ObservedObject var state: AppState
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
@@ -862,7 +902,6 @@ struct SettingsView: View {
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
     @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
-    @State private var selectedLanguages: Set<String> = Set(VocalisConfig.load().languages)
 
     private var exampleHoldCost: String {
         let stt = OpenAIPricing.estimateSTT(model: selectedSTT, durationSeconds: 10)
@@ -883,11 +922,11 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 pageHeader(
-                    title: "Settings",
-                    subtitle: "API key, models, hotkey, microphone, and usage for this Mac."
+                    title: "AI",
+                    subtitle: "Keys, models, hotkey, and microphone for this Mac."
                 )
 
-                sectionLabel("Hotkey")
+                settingsSectionLabel("Hotkey")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(state.hotkeyLabel)
@@ -909,10 +948,10 @@ struct SettingsView: View {
                     }
                 }
 
-                sectionLabel("Microphone")
+                settingsSectionLabel("Microphone")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Used while you hold the hotkey. The listening meter moves when this mic hears you. Bluetooth (AirPods) may take half a second to connect.")
+                        Text("Used while you hold the hotkey. Bluetooth (AirPods) may take half a second to connect.")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -944,71 +983,30 @@ struct SettingsView: View {
                     }
                 }
 
-                sectionLabel("Languages")
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Languages you usually speak. Default is English + Italian so the model doesn’t jump to something else. Select one to pin hard; select several to allow switching among those only.")
-                            .font(VocalisTheme.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Text(LanguageCatalog.displayNames(for: Array(selectedLanguages)))
-                            .font(.system(size: 13, weight: .medium))
-
-                        LazyVGrid(
-                            columns: [
-                                GridItem(.flexible(), spacing: 8),
-                                GridItem(.flexible(), spacing: 8),
-                            ],
-                            spacing: 6
-                        ) {
-                            ForEach(LanguageCatalog.choices) { lang in
-                                Toggle(isOn: languageBinding(lang.code)) {
-                                    Text(lang.name)
-                                        .font(VocalisTheme.body)
-                                        .lineLimit(1)
-                                }
-                                .toggleStyle(.checkbox)
-                            }
-                        }
-                    }
-                }
-
-                sectionLabel("Cost & models")
+                settingsSectionLabel("Models")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Listening while you hold the hotkey is free — audio stays on this Mac. You pay only when you release: speech-to-text, then optional cleanup.")
+                        Text("You pay on release: speech-to-text, then optional cleanup. Example ~10s hold: \(exampleHoldCost)")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Transcription is the expensive (and usually slowest) step. With live streaming on, Vocalis transcribes ~5s chunks while you hold so long messages mostly finish as you release. Same per-minute price — just parallel. Cleanup is a second call (Off = snappiest).")
-                            .font(VocalisTheme.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Text("Example ~10s hold with these models: \(exampleHoldCost)")
-                            .font(.system(size: 13, weight: .medium))
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle(isOn: $streamingSTT) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Speed up long dictations")
-                                        .font(.system(size: 13, weight: .medium))
-                                    Text(
-                                        streamingSTT
-                                            ? "On — transcribes ~5s chunks while you hold. Turn off to wait and send one request on release."
-                                            : "Off — classic mode: one transcription after you release."
-                                    )
-                                    .font(VocalisTheme.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                }
+                        Toggle(isOn: $streamingSTT) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Speed up long dictations")
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(
+                                    streamingSTT
+                                        ? "On — transcribes ~5s chunks while you hold."
+                                        : "Off — one transcription after you release."
+                                )
+                                .font(VocalisTheme.caption)
+                                .foregroundStyle(.secondary)
                             }
-                            .toggleStyle(.switch)
-                            .onChange(of: streamingSTT) { enabled in
-                                saveStreaming(enabled)
-                            }
+                        }
+                        .toggleStyle(.switch)
+                        .onChange(of: streamingSTT) { enabled in
+                            saveStreaming(enabled)
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
@@ -1051,10 +1049,10 @@ struct SettingsView: View {
                     }
                 }
 
-                sectionLabel("API keys")
+                settingsSectionLabel("API keys")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Keys stay in ~/.config/vocalis on this Mac. Grok STT needs an xAI key; OpenAI models and cleanup need an OpenAI key.")
+                        Text("Keys stay in ~/.config/vocalis on this Mac. Grok STT needs xAI; OpenAI models and cleanup need OpenAI.")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1097,34 +1095,6 @@ struct SettingsView: View {
                     }
                 }
 
-                sectionLabel("Usage")
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        usageRow(
-                            "Today",
-                            cost: state.usageToday,
-                            split: state.usageTodaySplit,
-                            detail: state.usageTodayDetail
-                        )
-                        usageRow(
-                            "This week",
-                            cost: state.usageWeek,
-                            split: state.usageWeekSplit,
-                            detail: state.usageWeekDetail
-                        )
-                        usageRow(
-                            "All time",
-                            cost: state.usageTotal,
-                            split: state.usageTotalSplit,
-                            detail: state.usageTotalDetail
-                        )
-                        Text("Local estimates — Voice = speech-to-text; Cleanup = polish pass. Not provider billing.")
-                            .font(VocalisTheme.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
                 if !state.statusMessage.isEmpty {
                     Text(state.statusMessage)
                         .font(VocalisTheme.body)
@@ -1156,7 +1126,6 @@ struct SettingsView: View {
                 ? config.cleanupModel
                 : ModelCatalog.cleanupOff
             streamingSTT = config.streamingSTT
-            selectedLanguages = Set(config.languages)
             micDevices = MicDevices.listInputs()
             state.refresh(
                 permissions: nil,
@@ -1166,36 +1135,6 @@ struct SettingsView: View {
             )
         }
         .onDisappear { stopRecording(cancelled: true) }
-    }
-
-    private func languageBinding(_ code: String) -> Binding<Bool> {
-        Binding(
-            get: { selectedLanguages.contains(code) },
-            set: { enabled in
-                if enabled {
-                    selectedLanguages.insert(code)
-                } else {
-                    // Keep at least one language selected.
-                    guard selectedLanguages.count > 1 else { return }
-                    selectedLanguages.remove(code)
-                }
-                saveLanguages()
-            }
-        )
-    }
-
-    private func saveLanguages() {
-        do {
-            var next = VocalisConfig.load()
-            next.languages = LanguageCatalog.normalize(Array(selectedLanguages))
-            try next.save()
-            config = next
-            selectedLanguages = Set(next.languages)
-            onModelsChanged()
-            state.statusMessage = "Languages: \(LanguageCatalog.displayNames(for: next.languages))"
-        } catch {
-            state.statusMessage = "Could not save languages."
-        }
     }
 
     private func saveSTT(_ model: String) {
@@ -1246,33 +1185,6 @@ struct SettingsView: View {
                 : "Live transcription off — one request on release."
         } catch {
             state.statusMessage = "Could not save setting."
-        }
-    }
-
-    private func sectionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(VocalisTheme.caption)
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
-    }
-
-    private func usageRow(_ label: String, cost: String, split: String, detail: String) -> some View {
-        HStack(alignment: .top) {
-            Text(label)
-                .font(VocalisTheme.label)
-                .frame(width: 88, alignment: .leading)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(cost) estimated")
-                    .font(.system(size: 13, weight: .medium))
-                Text(split)
-                    .font(VocalisTheme.caption)
-                    .foregroundStyle(.secondary)
-                Text(detail)
-                    .font(VocalisTheme.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer()
         }
     }
 
@@ -1376,13 +1288,194 @@ private func pageHeader(title: String, subtitle: String) -> some View {
     }
 }
 
+private func settingsSectionLabel(_ title: String) -> some View {
+    Text(title)
+        .font(VocalisTheme.caption)
+        .foregroundStyle(.secondary)
+        .padding(.top, 4)
+}
+
+private func usageCostRow(_ label: String, cost: String, split: String, detail: String) -> some View {
+    HStack(alignment: .top) {
+        Text(label)
+            .font(VocalisTheme.label)
+            .frame(width: 88, alignment: .leading)
+            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(cost) estimated")
+                .font(.system(size: 13, weight: .medium))
+            Text(split)
+                .font(VocalisTheme.caption)
+                .foregroundStyle(.secondary)
+            Text(detail)
+                .font(VocalisTheme.caption)
+                .foregroundStyle(.tertiary)
+        }
+        Spacer()
+    }
+}
+
+// MARK: - Languages
+
+struct LanguagesSettingsView: View {
+    @ObservedObject var state: AppState
+    var onModelsChanged: () -> Void
+    var onGoHome: () -> Void
+
+    @State private var selectedLanguages: Set<String> = Set(VocalisConfig.load().languages)
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                pageHeader(
+                    title: "Languages",
+                    subtitle: "Languages you usually speak. One pins hard; several allow switching among those only."
+                )
+
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(LanguageCatalog.displayNames(for: Array(selectedLanguages)))
+                            .font(.system(size: 14, weight: .medium))
+
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: 8),
+                                GridItem(.flexible(), spacing: 8),
+                            ],
+                            spacing: 8
+                        ) {
+                            ForEach(LanguageCatalog.choices) { lang in
+                                Toggle(isOn: languageBinding(lang.code)) {
+                                    Text(lang.name)
+                                        .font(VocalisTheme.body)
+                                        .lineLimit(1)
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                        }
+                    }
+                }
+
+                if !state.statusMessage.isEmpty {
+                    Text(state.statusMessage)
+                        .font(VocalisTheme.body)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Back to Home") { onGoHome() }
+                        .buttonStyle(AccentButtonStyle())
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
+        }
+        .onAppear {
+            selectedLanguages = Set(VocalisConfig.load().languages)
+        }
+    }
+
+    private func languageBinding(_ code: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedLanguages.contains(code) },
+            set: { enabled in
+                if enabled {
+                    selectedLanguages.insert(code)
+                } else {
+                    guard selectedLanguages.count > 1 else { return }
+                    selectedLanguages.remove(code)
+                }
+                saveLanguages()
+            }
+        )
+    }
+
+    private func saveLanguages() {
+        do {
+            var next = VocalisConfig.load()
+            next.languages = LanguageCatalog.normalize(Array(selectedLanguages))
+            try next.save()
+            selectedLanguages = Set(next.languages)
+            onModelsChanged()
+            state.statusMessage = "Languages: \(LanguageCatalog.displayNames(for: next.languages))"
+        } catch {
+            state.statusMessage = "Could not save languages."
+        }
+    }
+}
+
+// MARK: - Usage
+
+struct UsageSettingsView: View {
+    @ObservedObject var state: AppState
+    var onGoHome: () -> Void
+    var onRefresh: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                pageHeader(
+                    title: "Usage",
+                    subtitle: "Estimated spend on this Mac — Voice (speech-to-text) vs Cleanup (polish)."
+                )
+
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        usageCostRow(
+                            "Today",
+                            cost: state.usageToday,
+                            split: state.usageTodaySplit,
+                            detail: state.usageTodayDetail
+                        )
+                        Rectangle().fill(VocalisTheme.border).frame(height: 1)
+                        usageCostRow(
+                            "This week",
+                            cost: state.usageWeek,
+                            split: state.usageWeekSplit,
+                            detail: state.usageWeekDetail
+                        )
+                        Rectangle().fill(VocalisTheme.border).frame(height: 1)
+                        usageCostRow(
+                            "All time",
+                            cost: state.usageTotal,
+                            split: state.usageTotalSplit,
+                            detail: state.usageTotalDetail
+                        )
+                    }
+                }
+
+                Text("Local estimates only — not provider billing. Listening while you hold is free.")
+                    .font(VocalisTheme.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    Button("Refresh") { onRefresh() }
+                        .buttonStyle(QuietButtonStyle())
+                    Spacer()
+                    Button("Back to Home") { onGoHome() }
+                        .buttonStyle(AccentButtonStyle())
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
+        }
+        .onAppear { onRefresh() }
+    }
+}
+
 // MARK: - Setup
 
 struct OnboardingView: View {
     @ObservedObject var permissions: PermissionsModel
     @ObservedObject var state: AppState
     var onGoHome: () -> Void
-    var onGoSettings: () -> Void
+    var onGoAI: () -> Void
 
     var body: some View {
         ScrollView {
@@ -1447,14 +1540,14 @@ struct OnboardingView: View {
                     .textSelection(.enabled)
 
                 if !state.keyConfigured {
-                    callout(text: "API key still missing — add it in Settings when permissions are done.")
+                    callout(text: "API key still missing — add it in AI when permissions are done.")
                 }
 
                 HStack {
                     Button("Refresh") { permissions.refresh() }
                         .buttonStyle(QuietButtonStyle())
                     Spacer()
-                    Button("API key…") { onGoSettings() }
+                    Button("AI settings…") { onGoAI() }
                         .buttonStyle(QuietButtonStyle())
                     Button(permissions.snapshot.allCriticalGranted && permissions.snapshot.inputMonitoring
                            ? "Continue"
