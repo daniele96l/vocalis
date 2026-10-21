@@ -1169,7 +1169,7 @@ struct AccountSettingsView: View {
     }
 
     private func saveLicense() {
-        let trimmed = pastedLicense.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = VocalisConfig.normalizeLicenseCode(pastedLicense)
         guard !trimmed.isEmpty else { return }
         config.licenseCode = trimmed
         if config.licenseProxyURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1180,8 +1180,17 @@ struct AccountSettingsView: View {
             pastedLicense = ""
             config = VocalisConfig.load()
             state.keyConfigured = config.hasAPIKey
-            state.statusMessage = "License activated — ready to dictate."
+            state.statusMessage = "License saved — verifying with proxy…"
             onSavedKey()
+            Task { @MainActor in
+                do {
+                    try await OpenAIClient(config: config).verifyLicense()
+                    state.statusMessage = "License OK — ready to dictate."
+                } catch {
+                    let detail = (error as? LocalizedError)?.errorDescription ?? "rejected"
+                    state.statusMessage = "Saved but proxy rejected: \(detail). Use a code from mint-licenses."
+                }
+            }
         } catch {
             state.statusMessage = "Could not save license."
         }
@@ -1204,20 +1213,29 @@ struct AccountSettingsView: View {
     }
 
     private func pasteLicenseFromClipboard() {
-        guard let trimmed = readClipboardText() else {
+        guard let raw = readClipboardText() else {
             state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
             return
         }
+        let trimmed = VocalisConfig.normalizeLicenseCode(raw)
+        guard !trimmed.isEmpty else {
+            state.statusMessage = "Clipboard had no usable license text."
+            return
+        }
         pastedLicense = trimmed
-        state.statusMessage = "Pasted — tap Activate (or use Paste & activate)."
+        state.statusMessage = "Pasted \(trimmed) — tap Activate (or use Paste & activate)."
     }
 
     private func pasteAndActivateLicense() {
-        guard let trimmed = readClipboardText() else {
+        guard let raw = readClipboardText() else {
             state.statusMessage = "Clipboard is empty — copy a VOC-… code first."
             return
         }
-        pastedLicense = trimmed
+        pastedLicense = VocalisConfig.normalizeLicenseCode(raw)
+        guard !pastedLicense.isEmpty else {
+            state.statusMessage = "Clipboard had no usable license text."
+            return
+        }
         saveLicense()
     }
 
@@ -1875,6 +1893,11 @@ struct DebugSettingsView: View {
                         .buttonStyle(QuietButtonStyle())
                     Button("AI…") { onGoAI() }
                         .buttonStyle(QuietButtonStyle())
+                    if config.usesLicense {
+                        Button("Verify license") { verifyLicense() }
+                            .buttonStyle(AccentButtonStyle())
+                            .disabled(isRecording || isProcessing)
+                    }
                     Spacer()
                     Button("Refresh") {
                         config = VocalisConfig.load()
@@ -1895,6 +1918,24 @@ struct DebugSettingsView: View {
         }
         .onDisappear {
             if isRecording { controller.cancelDebugCapture() }
+        }
+    }
+
+    private func verifyLicense() {
+        append(.init(label: "License", detail: "Checking proxy…", status: .running))
+        Task { @MainActor in
+            do {
+                let cfg = VocalisConfig.load()
+                try await OpenAIClient(config: cfg).verifyLicense()
+                append(.init(
+                    label: "License",
+                    detail: "OK · \(VocalisConfig.normalizeLicenseCode(cfg.licenseCode).prefix(8))…",
+                    status: .ok
+                ))
+            } catch {
+                let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                append(.init(label: "License", detail: detail, status: .fail))
+            }
         }
     }
 

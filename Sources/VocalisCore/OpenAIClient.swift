@@ -14,7 +14,11 @@ public enum OpenAIClientError: LocalizedError {
         case .missingKey: return "Bad key or license"
         case .emptyAudio: return "Empty recording"
         case .emptyTranscript: return "No speech found"
-        case .http(let code, _):
+        case .http(let code, let body):
+            let lower = body.lowercased()
+            if lower.contains("invalid or missing license") {
+                return "Invalid license"
+            }
             if code == 401 || code == 403 { return "Bad key or license" }
             return "API \(code)"
         case .decode: return "Bad response"
@@ -92,6 +96,22 @@ public final class OpenAIClient: Sendable {
             return try await transcribeWithGrok(audioURL: audioURL)
         }
         return try await transcribeWithOpenAI(audioURL: audioURL)
+    }
+
+    /// Ping the license proxy without spending STT credits.
+    public func verifyLicense() async throws {
+        guard config.usesLicense else { throw OpenAIClientError.missingKey }
+        let code = config.resolvedLicenseCode
+        guard !code.isEmpty else { throw OpenAIClientError.missingKey }
+        guard let url = URL(string: "\(config.resolvedLicenseProxyURL)/v1/license/verify") else {
+            throw OpenAIClientError.decode
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(code)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try Self.throwIfNeeded(data: data, response: response)
     }
 
     private func transcribeWithGrok(audioURL: URL) async throws -> TranscriptionResult {

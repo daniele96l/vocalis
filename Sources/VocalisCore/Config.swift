@@ -36,7 +36,21 @@ public struct VocalisConfig: Equatable, Sendable {
 
     /// Normalized license; empty means own-keys mode.
     public var resolvedLicenseCode: String {
-        licenseCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        Self.normalizeLicenseCode(licenseCode)
+    }
+
+    /// Strip paste junk (quotes, Bearer, zero-width) and uppercase VOC-….
+    public static func normalizeLicenseCode(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.count >= 7, s.prefix(7).lowercased() == "bearer " {
+            s = String(s.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if (s.hasPrefix("\"") && s.hasSuffix("\"")) || (s.hasPrefix("'") && s.hasSuffix("'")) {
+            s = String(s.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
+        s = String(s.unicodeScalars.filter { allowed.contains($0) })
+        return s.uppercased()
     }
 
     public var hasLicense: Bool { !resolvedLicenseCode.isEmpty }

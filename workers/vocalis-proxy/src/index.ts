@@ -29,9 +29,14 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    const license = bearerToken(request);
+    const license = normalizeLicense(bearerToken(request));
     if (!(await licenseAllowed(license, env.LICENSE_CODES))) {
       return jsonError(401, "Invalid or missing license");
+    }
+
+    // Auth-only probe for the Debug tab (no upstream call).
+    if (request.method === "GET" && url.pathname === "/v1/license/verify") {
+      return Response.json({ ok: true }, { headers: corsHeaders() });
     }
 
     try {
@@ -59,12 +64,27 @@ function bearerToken(request: Request): string {
   return match?.[1]?.trim() ?? "";
 }
 
+/** Strip quotes/whitespace/Bearer, keep VOC-… shape, uppercase. */
+function normalizeLicense(raw: string): string {
+  let s = raw.trim();
+  if (/^Bearer\s+/i.test(s)) s = s.replace(/^Bearer\s+/i, "").trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  // Drop zero-width / non-ASCII junk from rich-text paste.
+  s = s.replace(/[^\w-]+/g, "");
+  return s.toUpperCase();
+}
+
 /** Timing-safe membership check against comma-separated LICENSE_CODES. */
 async function licenseAllowed(candidate: string, rawList: string | undefined): Promise<boolean> {
   if (!candidate || !rawList) return false;
   const codes = rawList
-    .split(",")
-    .map((c) => c.trim())
+    .split(/[,;\s]+/)
+    .map((c) => normalizeLicense(c))
     .filter(Boolean);
   for (const code of codes) {
     if (await timingSafeEqual(candidate, code)) return true;
