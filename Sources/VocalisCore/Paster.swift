@@ -41,24 +41,47 @@ public enum Paster {
         pasteboard.setString(trimmed, forType: .string)
         NSLog("Vocalis: dictation on clipboard (\(trimmed.count) chars)")
 
+        // Prompt once if needed — after reinstalls TCC often forgets this binary.
+        if !isAccessibilityTrusted(prompt: false) {
+            _ = isAccessibilityTrusted(prompt: true)
+        }
         guard isAccessibilityTrusted(prompt: false) else {
             NSLog("Vocalis: Accessibility off — paste skipped; text kept on clipboard + last_dictation.txt")
             return .clipboardOnly
         }
 
-        // Brief settle so the focused app sees the new clipboard.
-        Thread.sleep(forTimeInterval: 0.05)
+        // Settle so the focused app sees the new clipboard before ⌘V.
+        Thread.sleep(forTimeInterval: 0.12)
 
-        let source = CGEventSource(stateID: .hidSystemState)
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true) // V
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
-        keyDown?.flags = .maskCommand
-        keyUp?.flags = .maskCommand
-        keyDown?.post(tap: .cghidEventTap)
-        keyUp?.post(tap: .cghidEventTap)
+        guard postCommandV() else {
+            NSLog("Vocalis: could not create ⌘V events — clipboard only")
+            return .clipboardOnly
+        }
+
+        // Second pulse helps some Electron / browser fields that ignore the first.
+        Thread.sleep(forTimeInterval: 0.06)
+        _ = postCommandV()
 
         NSLog("Vocalis: posted ⌘V")
         return .pasted
+    }
+
+    /// Posts ⌘V via HID and session taps (session helps when HID is filtered).
+    private static func postCommandV() -> Bool {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
+        else {
+            return false
+        }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        for tap in [CGEventTapLocation.cghidEventTap, .cgSessionEventTap] {
+            keyDown.post(tap: tap)
+            keyUp.post(tap: tap)
+        }
+        return true
     }
 
     /// Legacy name — prefer `deliver`.

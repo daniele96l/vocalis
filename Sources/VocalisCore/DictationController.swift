@@ -291,7 +291,8 @@ public final class DictationController {
                     try? await Task.sleep(nanoseconds: 120_000_000)
                     bubble.hide()
                 case .clipboardOnly:
-                    showNotice("On clipboard · ⌘V", seconds: 3.2)
+                    // Almost always: Accessibility not granted for this Vocalis.app copy.
+                    showNotice("Clipboard only · enable Accessibility", seconds: 4.0)
                 }
             } catch {
                 // If we already have transcript text in a nested failure, it's archived by deliver.
