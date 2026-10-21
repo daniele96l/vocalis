@@ -18,22 +18,16 @@ if ! command -v swift >/dev/null 2>&1; then
   exit 1
 fi
 
-# SwiftUI @State macros need the Xcode toolchain. Plain Command Line Tools
-# (common on “no Xcode” Macs) fail with: SwiftUIMacros.StateMacro could not be found.
+# Some Command Line Tools installs (esp. newer macOS SDKs) cannot compile
+# SwiftUI @State — they fail with SwiftUIMacros.StateMacro not found.
+# Prefer the pre-built Release on those Macs; full Xcode always works.
 DEVELOPER_DIR_RESOLVED="$(xcode-select -p 2>/dev/null || true)"
-if [[ "${VOCALIS_FORCE_CLT_BUILD:-}" != "1" ]] \
-   && [[ "$DEVELOPER_DIR_RESOLVED" != *"/Xcode.app/"* ]] \
+if [[ "$DEVELOPER_DIR_RESOLVED" != *"/Xcode.app/"* ]] \
    && [[ "$DEVELOPER_DIR_RESOLVED" != *"/Xcode-beta.app/"* ]]; then
-  echo "error: building from source needs full Xcode (not Command Line Tools only)." >&2
-  echo "  Recent CLT toolchains lack SwiftUIMacros — @State fails to compile." >&2
-  echo "" >&2
-  echo "Easiest (no Xcode, no compile) — install the latest Release:" >&2
-  echo "  curl -fsSL https://raw.githubusercontent.com/daniele96l/vocalis/main/Scripts/install-release.sh | bash" >&2
-  echo "" >&2
-  echo "Or install Xcode from the App Store, then:" >&2
-  echo "  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer" >&2
-  echo "  ./Installer/install.sh" >&2
-  exit 1
+  echo "note: using Command Line Tools (not full Xcode)."
+  echo "      If the build fails on SwiftUIMacros / @State, install the Release instead:"
+  echo "      curl -fsSL https://raw.githubusercontent.com/daniele96l/vocalis/main/Scripts/install-release.sh | bash"
+  echo ""
 fi
 
 # If we're already inside a vocalis checkout, build here; else clone to a temp/cache dir.
