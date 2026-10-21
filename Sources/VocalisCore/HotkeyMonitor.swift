@@ -21,6 +21,9 @@ public final class HotkeyMonitor {
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var watchdog: Timer?
+    /// Option/Shift alone can flicker flagsChanged and end the hold mid-sentence.
+    private var releaseDebounceTask: Task<Void, Never>?
+    private let releaseDebounceNs: UInt64 = 180_000_000
 
     public init(binding: HotkeyBinding = .rightOption) {
         self.binding = binding
@@ -148,6 +151,8 @@ public final class HotkeyMonitor {
         }
         eventTap = nil
         runLoopSource = nil
+        releaseDebounceTask?.cancel()
+        releaseDebounceTask = nil
         isHolding = false
         activeBackend = "none"
         if isTapInstalled {
@@ -237,6 +242,7 @@ public final class HotkeyMonitor {
                     down = Self.modifierFlag(forKeyCode: target).map { flags.contains($0) } ?? false
                 }
             } else if type == .flagsChanged {
+                // Other keys' flagsChanged: only treat as release if our modifier bit is gone.
                 if let flag = Self.modifierFlag(forKeyCode: target), !flags.contains(flag) {
                     down = false
                 } else {
@@ -245,7 +251,12 @@ public final class HotkeyMonitor {
             } else {
                 return
             }
-            updateHold(down)
+            if down {
+                cancelReleaseDebounce()
+                updateHold(true)
+            } else {
+                scheduleReleaseDebounce()
+            }
 
         case .chord(let targetKey, let needsControl, let needsShift, let needsOption, let needsCommand):
             let modsOK =
@@ -255,19 +266,37 @@ public final class HotkeyMonitor {
                 && flags.contains(.maskCommand) == needsCommand
 
             if type == .flagsChanged {
-                if !modsOK { updateHold(false) }
+                if !modsOK { scheduleReleaseDebounce() }
+                else { cancelReleaseDebounce() }
                 return
             }
             guard keyCode == targetKey else {
-                if type == .keyUp && isHolding { updateHold(false) }
+                if type == .keyUp && isHolding { scheduleReleaseDebounce() }
                 return
             }
             if type == .keyDown && modsOK {
+                cancelReleaseDebounce()
                 updateHold(true)
             } else if type == .keyUp {
-                updateHold(false)
+                scheduleReleaseDebounce()
             }
         }
+    }
+
+    private func scheduleReleaseDebounce() {
+        releaseDebounceTask?.cancel()
+        releaseDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: self?.releaseDebounceNs ?? 180_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.updateHold(false)
+            }
+        }
+    }
+
+    private func cancelReleaseDebounce() {
+        releaseDebounceTask?.cancel()
+        releaseDebounceTask = nil
     }
 
     private static func modifierFlag(forKeyCode code: Int64) -> CGEventFlags? {

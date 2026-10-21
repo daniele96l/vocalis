@@ -38,6 +38,10 @@ public final class LiveTranscriber {
                 return result.text
             } catch OpenAIClientError.emptyAudio, OpenAIClientError.emptyTranscript {
                 return ""
+            } catch {
+                // Keep listening; a bad chunk (e.g. old float WAV) must not kill the hold.
+                NSLog("Vocalis: live STT chunk failed: \(error.localizedDescription)")
+                return ""
             }
         }
     }

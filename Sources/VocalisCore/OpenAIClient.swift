@@ -64,7 +64,15 @@ public final class OpenAIClient: Sendable {
         let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
         if size < 200 { throw OpenAIClientError.emptyAudio }
 
-        let localDuration = Self.audioDurationSeconds(url: audioURL)
+        // Grok rejects IEEE-float WAVs from AVAudioEngine/AudioQueue ("no samples").
+        let uploadURL = try AudioFormatConversion.grokCompatibleWAV(from: audioURL)
+        defer {
+            if uploadURL != audioURL {
+                try? FileManager.default.removeItem(at: uploadURL)
+            }
+        }
+
+        let localDuration = Self.audioDurationSeconds(url: uploadURL)
         let languages = LanguageCatalog.normalize(config.languages)
         let model = config.sttModel.isEmpty ? ModelCatalog.grokVoiceTranscribe : config.sttModel
 
@@ -88,12 +96,10 @@ public final class OpenAIClient: Sendable {
             append("true\r\n")
         }
 
-        let filename = audioURL.pathExtension.isEmpty ? "audio.wav" : "audio.\(audioURL.pathExtension)"
-        let mime = audioURL.pathExtension.lowercased() == "wav" ? "audio/wav" : "audio/m4a"
         append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
-        append("Content-Type: \(mime)\r\n\r\n")
-        body.append(try Data(contentsOf: audioURL))
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+        append("Content-Type: audio/wav\r\n\r\n")
+        body.append(try Data(contentsOf: uploadURL))
         append("\r\n")
         append("--\(boundary)--\r\n")
 
