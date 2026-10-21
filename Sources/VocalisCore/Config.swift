@@ -6,6 +6,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public var sttModel: String
     public var cleanupModel: String
     public var hotkey: String
+    /// Core Audio device UID; empty = system default input.
+    public var inputDeviceID: String
 
     public static let defaultBaseURL = "https://api.openai.com/v1"
     public static let defaultSTTModel = "whisper-1"
@@ -36,13 +38,15 @@ public struct VocalisConfig: Equatable, Sendable {
         baseURL: String = defaultBaseURL,
         sttModel: String = defaultSTTModel,
         cleanupModel: String = defaultCleanupModel,
-        hotkey: String = defaultHotkey
+        hotkey: String = defaultHotkey,
+        inputDeviceID: String = ""
     ) {
         self.openaiAPIKey = openaiAPIKey
         self.baseURL = baseURL
         self.sttModel = sttModel
         self.cleanupModel = cleanupModel
         self.hotkey = hotkey
+        self.inputDeviceID = inputDeviceID
     }
 
     /// Env `OPENAI_API_KEY` (or `AI_GATEWAY_API_KEY`) wins over file key.
@@ -78,6 +82,7 @@ public struct VocalisConfig: Equatable, Sendable {
         stt_model = "\(sttModel)"
         cleanup_model = "\(cleanupModel)"
         hotkey = "\(hotkey)"
+        input_device_id = "\(inputDeviceID)"
         """
         try body.write(to: Self.configFileURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.configFileURL.path)
@@ -105,6 +110,7 @@ public struct VocalisConfig: Equatable, Sendable {
             case "stt_model": config.sttModel = value.isEmpty ? defaultSTTModel : value
             case "cleanup_model": config.cleanupModel = value.isEmpty ? defaultCleanupModel : value
             case "hotkey": config.hotkey = value.isEmpty ? defaultHotkey : value
+            case "input_device_id": config.inputDeviceID = value
             default: break
             }
         }

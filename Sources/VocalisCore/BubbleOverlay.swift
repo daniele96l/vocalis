@@ -18,29 +18,48 @@ public final class BubbleOverlayController {
 
     public func show(_ state: BubbleState) {
         model.state = state
+        if state != .listening {
+            model.level = 0
+        }
         ensurePanel()
         guard let panel else { return }
         position(panel)
         if !panel.isVisible {
             panel.orderFrontRegardless()
         }
-        // Grow slightly for animated content
-        let size = NSSize(width: 260, height: 64)
+        let size: NSSize
+        switch state {
+        case .listening:
+            size = NSSize(width: 300, height: 92)
+        case .error:
+            size = NSSize(width: 280, height: 64)
+        default:
+            size = NSSize(width: 260, height: 64)
+        }
         var frame = panel.frame
         frame.size = size
         panel.setFrame(frame, display: true)
         panel.contentView?.needsDisplay = true
     }
 
+    public func updateMeter(level: Float, micName: String) {
+        model.level = level
+        model.micName = micName
+        if let panel, model.state == .listening {
+            position(panel)
+        }
+    }
+
     public func hide() {
         model.state = .hidden
+        model.level = 0
         panel?.orderOut(nil)
     }
 
     private func ensurePanel() {
         if panel != nil { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 64),
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 92),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -84,6 +103,8 @@ public final class BubbleOverlayController {
 @MainActor
 final class BubbleModel: ObservableObject {
     @Published var state: BubbleState = .hidden
+    @Published var level: Float = 0
+    @Published var micName: String = "Microphone"
 }
 
 struct BubbleView: View {
@@ -95,7 +116,7 @@ struct BubbleView: View {
             case .hidden:
                 Color.clear.frame(width: 1, height: 1)
             case .listening:
-                pill(label: "Listening…", kind: .listening)
+                listeningPill
             case .fixing:
                 pill(label: "Cleaning…", kind: .fixing)
             case .error(let message):
@@ -105,14 +126,37 @@ struct BubbleView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.state)
     }
 
+    private var listeningPill: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                LiveWaveform(level: model.level)
+                    .frame(width: 88, height: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.level < 0.04 ? "Listening… (quiet)" : "Listening…")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    Text(model.micName)
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 288, alignment: .leading)
+        .background(bubbleChrome)
+        .padding(4)
+        .transition(.scale(scale: 0.92).combined(with: .opacity))
+    }
+
     private enum Kind { case listening, fixing, error }
 
     private func pill(label: String, kind: Kind) -> some View {
         HStack(spacing: 12) {
             switch kind {
             case .listening:
-                BreathingOrb()
-                    .frame(width: 22, height: 22)
+                EmptyView()
             case .fixing:
                 CleaningDots()
                     .frame(width: 28, height: 14)
@@ -127,39 +171,57 @@ struct BubbleView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-                )
-        )
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 5)
+        .background(bubbleChrome)
         .padding(4)
         .transition(.scale(scale: 0.92).combined(with: .opacity))
     }
+
+    private var bubbleChrome: some View {
+        Capsule(style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 14, y: 5)
+    }
 }
 
-/// Soft breathing orb while recording — calm pulse, no frantic bars.
-struct BreathingOrb: View {
-    @State private var breathe = false
+/// Live mic level bars — height follows input so silence vs speech is obvious.
+struct LiveWaveform: View {
+    var level: Float
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color.red.opacity(0.18))
-                .scaleEffect(breathe ? 1.35 : 0.9)
-            Circle()
-                .fill(Color.red.opacity(0.85))
-                .frame(width: 10, height: 10)
-                .scaleEffect(breathe ? 1.08 : 0.92)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+            WaveformBars(level: level, time: timeline.date.timeIntervalSinceReferenceDate)
         }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) {
-                breathe = true
+    }
+}
+
+private struct WaveformBars: View {
+    var level: Float
+    var time: TimeInterval
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(0..<9, id: \.self) { i in
+                Capsule()
+                    .fill(barColor)
+                    .frame(width: 4, height: barHeight(index: i))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .animation(.easeOut(duration: 0.08), value: level)
+    }
+
+    private var barColor: Color {
+        level < 0.04 ? Color.orange.opacity(0.7) : Color.red.opacity(0.85)
+    }
+
+    private func barHeight(index: Int) -> CGFloat {
+        let wobble = 0.55 + 0.45 * abs(sin(time * 6.0 + Double(index) * 0.7))
+        let base = CGFloat(level) * 26 * CGFloat(wobble)
+        return max(4, base + (level < 0.04 ? 3 : 0))
     }
 }
 

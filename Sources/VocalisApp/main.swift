@@ -250,6 +250,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else if CommandLine.arguments.contains("--demo-listening") {
                 openMain(tab: .home)
                 controller.bubble.show(.listening)
+                controller.bubble.updateMeter(
+                    level: 0.55,
+                    micName: MicDevices.displayName(forUID: VocalisConfig.load().inputDeviceID)
+                )
+                // Animate demo levels so the waveform is obvious in screenshots.
+                Task { @MainActor in
+                    var t = 0.0
+                    while true {
+                        t += 0.05
+                        let level = Float(0.25 + 0.55 * abs(sin(t * 3)))
+                        controller.bubble.updateMeter(
+                            level: level,
+                            micName: MicDevices.displayName(forUID: VocalisConfig.load().inputDeviceID)
+                        )
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                    }
+                }
             } else if CommandLine.arguments.contains("--demo-fixing") {
                 openMain(tab: .home)
                 controller.bubble.show(.fixing)
@@ -419,6 +436,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     app.controller?.reloadConfig()
                     app.syncAppState()
                 }
+            },
+            onInputDeviceChanged: { [weak self] uid in
+                guard let app = self else { return }
+                Task { @MainActor in
+                    do {
+                        try app.controller?.setInputDevice(uid: uid)
+                        app.appState.micDeviceName = MicDevices.displayName(forUID: uid)
+                        app.appState.statusMessage = "Microphone updated."
+                        app.syncAppState()
+                    } catch {
+                        app.appState.statusMessage = "Could not save microphone."
+                    }
+                }
             }
         )
 
@@ -470,6 +500,8 @@ final class AppState: ObservableObject {
     @Published var usageTotalDetail = "0 requests"
     @Published var statusMessage = ""
     @Published var hotkeyWarning = ""
+    @Published var micDeviceName = MicDevices.displayName(forUID: "")
+    @Published var micDeviceUID = ""
 
     func refresh(
         permissions: PermissionSnapshot?,
@@ -481,6 +513,8 @@ final class AppState: ObservableObject {
         hotkeyLabel = binding.displayName
         hotkeyConfig = binding.configValue
         keyConfigured = config.hasAPIKey
+        micDeviceUID = config.inputDeviceID
+        micDeviceName = MicDevices.displayName(forUID: config.inputDeviceID)
         if let permissions {
             micOK = permissions.microphone
             accessibilityOK = permissions.accessibility
@@ -522,6 +556,7 @@ struct RootView: View {
     var onRefresh: () -> Void
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
+    var onInputDeviceChanged: (String) -> Void
 
     var body: some View {
         ZStack {
@@ -548,6 +583,7 @@ struct RootView: View {
                             state: state,
                             onHotkeyChanged: onHotkeyChanged,
                             onSavedKey: onSavedKey,
+                            onInputDeviceChanged: onInputDeviceChanged,
                             onGoSetup: { nav.tab = .setup },
                             onGoHome: { nav.tab = .home }
                         )
@@ -685,6 +721,10 @@ struct HomeView: View {
                         metaBlock(title: "Usage today", value: state.usageToday, detail: state.usageTodayDetail)
                     }
 
+                    thinRule
+
+                    metaBlock(title: "Microphone", value: state.micDeviceName, detail: "Change in Settings")
+
                     if !state.hotkeyWarning.isEmpty {
                         Text(state.hotkeyWarning)
                             .font(VocalisTheme.caption)
@@ -771,6 +811,7 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
+    var onInputDeviceChanged: (String) -> Void
     var onGoSetup: () -> Void
     var onGoHome: () -> Void
 
@@ -779,6 +820,8 @@ struct SettingsView: View {
     @State private var recording = false
     @State private var recordHint = "Click Change hotkey, then hold your new shortcut."
     @State private var localMonitor: Any?
+    @State private var micDevices: [MicDevice] = MicDevices.listInputs()
+    @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
 
     private var keyConfigured: Bool { config.hasAPIKey }
 
@@ -787,7 +830,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 pageHeader(
                     title: "Settings",
-                    subtitle: "API key, hotkey, and usage for this Mac."
+                    subtitle: "API key, hotkey, microphone, and usage for this Mac."
                 )
 
                 sectionLabel("Hotkey")
@@ -809,6 +852,40 @@ struct SettingsView: View {
                                     .buttonStyle(QuietButtonStyle())
                             }
                         }
+                    }
+                }
+
+                sectionLabel("Microphone")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Used while you hold the hotkey. The listening bubble shows a live waveform so you can tell if this mic hears you.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Picker("Input", selection: $selectedMicUID) {
+                            Text("System default").tag("")
+                            ForEach(micDevices) { device in
+                                Text(device.name).tag(device.uid)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .onChange(of: selectedMicUID) { newValue in
+                            onInputDeviceChanged(newValue)
+                            config.inputDeviceID = newValue
+                            state.micDeviceUID = newValue
+                            state.micDeviceName = MicDevices.displayName(forUID: newValue)
+                        }
+
+                        Text(MicDevices.displayName(forUID: selectedMicUID))
+                            .font(VocalisTheme.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button("Refresh mic list") {
+                            micDevices = MicDevices.listInputs()
+                        }
+                        .buttonStyle(QuietButtonStyle())
                     }
                 }
 
@@ -876,6 +953,8 @@ struct SettingsView: View {
         }
         .onAppear {
             config = VocalisConfig.load()
+            selectedMicUID = config.inputDeviceID
+            micDevices = MicDevices.listInputs()
             state.refresh(
                 permissions: nil,
                 config: config,

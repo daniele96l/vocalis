@@ -8,6 +8,7 @@ public final class DictationController {
     public private(set) var hotkey: HotkeyMonitor
     private var processing = false
     private var errorHideTask: Task<Void, Never>?
+    private var meterTask: Task<Void, Never>?
 
     public var isHotkeyTapInstalled: Bool { hotkey.isTapInstalled }
     public var hotkeyStartError: String? { hotkey.lastStartError }
@@ -17,6 +18,7 @@ public final class DictationController {
         self.config = config
         let binding = HotkeyBinding.parse(config.hotkey)
         self.hotkey = HotkeyMonitor(binding: binding)
+        recorder.preferredDeviceUID = config.inputDeviceID
         hotkey.onPushBegan = { [weak self] in
             Task { @MainActor in self?.beginHold() }
         }
@@ -31,6 +33,7 @@ public final class DictationController {
 
     public func reloadConfig() {
         config = .load()
+        recorder.preferredDeviceUID = config.inputDeviceID
         applyBinding(HotkeyBinding.parse(config.hotkey))
     }
 
@@ -38,6 +41,13 @@ public final class DictationController {
         config.hotkey = binding.configValue
         try config.save()
         applyBinding(binding)
+    }
+
+    public func setInputDevice(uid: String) throws {
+        config.inputDeviceID = uid
+        try config.save()
+        recorder.preferredDeviceUID = uid
+        _ = MicDevices.setDefaultInput(uid: uid)
     }
 
     private func applyBinding(_ binding: HotkeyBinding) {
@@ -49,6 +59,7 @@ public final class DictationController {
     }
 
     public func stop() {
+        stopMeter()
         hotkey.stop()
         recorder.cancel()
         bubble.hide()
@@ -64,8 +75,11 @@ public final class DictationController {
                 return
             }
             do {
+                recorder.preferredDeviceUID = config.inputDeviceID
                 try recorder.start()
                 bubble.show(.listening)
+                bubble.updateMeter(level: 0, micName: recorder.activeDeviceName)
+                startMeter()
             } catch {
                 showError(shortError(error))
             }
@@ -73,6 +87,7 @@ public final class DictationController {
     }
 
     private func endHold() {
+        stopMeter()
         guard recorder.isRecording else { return }
         processing = true
         bubble.show(.fixing)
@@ -100,7 +115,26 @@ public final class DictationController {
         }
     }
 
+    private func startMeter() {
+        stopMeter()
+        meterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let level = self.recorder.currentLevel()
+                let name = self.recorder.activeDeviceName
+                self.bubble.updateMeter(level: level, micName: name)
+                try? await Task.sleep(nanoseconds: 40_000_000) // ~25 fps
+            }
+        }
+    }
+
+    private func stopMeter() {
+        meterTask?.cancel()
+        meterTask = nil
+    }
+
     private func showError(_ message: String) {
+        stopMeter()
         bubble.show(.error(message))
         errorHideTask?.cancel()
         errorHideTask = Task {

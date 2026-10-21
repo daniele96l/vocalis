@@ -19,6 +19,9 @@ public enum AudioRecorderError: LocalizedError {
 public final class AudioRecorder: NSObject {
     private var recorder: AVAudioRecorder?
     private var outputURL: URL?
+    /// UID from config; empty = system default.
+    public var preferredDeviceUID: String = ""
+    public private(set) var activeDeviceName: String = MicDevices.displayName(forUID: "")
 
     public var isRecording: Bool { recorder?.isRecording == true }
 
@@ -34,6 +37,9 @@ public final class AudioRecorder: NSObject {
         if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
             throw AudioRecorderError.permissionDenied
         }
+
+        _ = MicDevices.setDefaultInput(uid: preferredDeviceUID)
+        activeDeviceName = MicDevices.displayName(forUID: preferredDeviceUID)
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("vocalis-\(UUID().uuidString).m4a")
@@ -82,7 +88,7 @@ public final class AudioRecorder: NSObject {
         guard let recorder, recorder.isRecording else { return 0 }
         recorder.updateMeters()
         let power = recorder.averagePower(forChannel: 0)
-        // Map dB (-60...0) roughly to 0...1
-        return max(0, min(1, (power + 60) / 60))
+        // Map dB (-55...0) to 0...1 — leave headroom so quiet rooms aren't flat zero.
+        return max(0, min(1, (power + 55) / 55))
     }
 }
