@@ -4,14 +4,25 @@ import Combine
 import SwiftUI
 import VocalisCore
 
+enum AppTab: String, CaseIterable, Identifiable {
+    case home = "Home"
+    case settings = "Settings"
+    case setup = "Setup"
+
+    var id: String { rawValue }
+}
+
+final class AppNavigation: ObservableObject {
+    @Published var tab: AppTab = .home
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var controller: DictationController?
-    private var homeWindow: NSWindow?
-    private var settingsWindow: NSWindow?
-    private var onboardingWindow: NSWindow?
+    private var mainWindow: NSWindow?
     private let permissions = PermissionsModel()
     private let appState = AppState()
+    private let nav = AppNavigation()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
@@ -55,20 +66,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             syncAppState()
 
             if CommandLine.arguments.contains("--settings") {
-                openSettings()
+                openMain(tab: .settings)
             } else if CommandLine.arguments.contains("--permissions") {
-                openOnboarding()
+                openMain(tab: .setup)
             } else if CommandLine.arguments.contains("--home") {
-                openHome()
+                openMain(tab: .home)
             } else if CommandLine.arguments.contains("--demo-listening") {
-                openHome()
+                openMain(tab: .home)
                 controller.bubble.show(.listening)
             } else if CommandLine.arguments.contains("--demo-fixing") {
-                openHome()
+                openMain(tab: .home)
                 controller.bubble.show(.fixing)
             } else {
-                maybePromptPermissions()
-                maybePromptForMissingKey()
+                openPreferredTab()
             }
         }
     }
@@ -99,9 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let candidates: [URL?] = [
             Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
             Bundle.main.resourceURL?.appendingPathComponent("AppIcon.icns"),
-            // When launched as .app/Contents/MacOS/Vocalis
             Bundle.main.bundleURL
-                .deletingLastPathComponent() // MacOS
+                .deletingLastPathComponent()
                 .appendingPathComponent("Resources/AppIcon.icns"),
         ]
         for case let url? in candidates {
@@ -155,9 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
     }
 
-    @objc private func showHome() { openHome() }
-    @objc private func showSettings() { openSettings() }
-    @objc private func showPermissions() { openOnboarding() }
+    @objc private func showHome() { openMain(tab: .home) }
+    @objc private func showSettings() { openMain(tab: .settings) }
+    @objc private func showPermissions() { openMain(tab: .setup) }
 
     @objc private func quit() {
         Task { @MainActor in
@@ -166,34 +175,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func maybePromptPermissions() {
+    private func openPreferredTab() {
         permissions.refresh()
         let snap = permissions.snapshot
         if !snap.allCriticalGranted || !snap.inputMonitoring {
-            openOnboarding()
+            openMain(tab: .setup)
+        } else if !VocalisConfig.load().hasAPIKey {
+            openMain(tab: .settings)
         } else {
-            openHome()
+            openMain(tab: .home)
         }
     }
 
-    private func maybePromptForMissingKey() {
-        if !VocalisConfig.load().hasAPIKey {
-            openSettings()
-        }
-    }
-
-    private func openHome() {
+    private func openMain(tab: AppTab) {
         permissions.refresh()
         MainActor.assumeIsolated { syncAppState() }
-        if let existing = homeWindow {
+        nav.tab = tab
+
+        if let existing = mainWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = HomeView(
+
+        let view = RootView(
+            nav: nav,
             state: appState,
-            onSettings: { [weak self] in self?.openSettings() },
-            onPermissions: { [weak self] in self?.openOnboarding() },
+            permissions: permissions,
             onRefresh: { [weak self] in
                 guard let app = self else { return }
                 Task { @MainActor in
@@ -203,24 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     app.permissions.refresh()
                     app.syncAppState()
                 }
-            }
-        )
-        present(view, title: "Vocalis", size: NSSize(width: 420, height: 420)) { [weak self] w in
-            self?.homeWindow = w
-        } onClose: { [weak self] in
-            self?.homeWindow = nil
-        }
-    }
-
-    private func openSettings() {
-        MainActor.assumeIsolated { syncAppState() }
-        if let existing = settingsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let view = SettingsView(
-            state: appState,
+            },
             onHotkeyChanged: { [weak self] binding in
                 guard let app = self else { return }
                 Task { @MainActor in
@@ -238,64 +229,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     app.controller?.reloadConfig()
                     app.syncAppState()
                 }
-            },
-            onOpenPermissions: { [weak self] in self?.openOnboarding() },
-            onClose: { [weak self] in
-                self?.settingsWindow?.close()
-                self?.settingsWindow = nil
             }
         )
-        present(view, title: "Vocalis Settings", size: NSSize(width: 480, height: 600)) { [weak self] w in
-            self?.settingsWindow = w
-        } onClose: { [weak self] in
-            self?.settingsWindow = nil
-        }
-    }
 
-    private func openOnboarding() {
-        permissions.refresh()
-        MainActor.assumeIsolated { syncAppState() }
-        if let existing = onboardingWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let view = OnboardingView(
-            permissions: permissions,
-            hotkeyLabel: appState.hotkeyLabel,
-            onClose: { [weak self] in
-                guard let app = self else { return }
-                app.onboardingWindow?.close()
-                app.onboardingWindow = nil
-                Task { @MainActor in app.syncAppState() }
-            }
-        )
-        present(view, title: "Vocalis Setup", size: NSSize(width: 460, height: 500)) { [weak self] w in
-            self?.onboardingWindow = w
-        } onClose: { [weak self] in
-            self?.onboardingWindow = nil
-        }
-    }
-
-    private func present<V: View>(
-        _ view: V,
-        title: String,
-        size: NSSize,
-        store: @escaping (NSWindow) -> Void,
-        onClose: @escaping () -> Void
-    ) {
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = title
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(size)
+        window.title = "Vocalis"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.setContentSize(NSSize(width: 480, height: 620))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = WindowCloseDelegate.shared
-        WindowCloseDelegate.shared.handlers[ObjectIdentifier(window)] = onClose
+        WindowCloseDelegate.shared.handlers[ObjectIdentifier(window)] = { [weak self] in
+            self?.mainWindow = nil
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        store(window)
+        mainWindow = window
     }
 }
 
@@ -369,12 +319,72 @@ final class AppState: ObservableObject {
     }
 }
 
+// MARK: - Root (single window)
+
+struct RootView: View {
+    @ObservedObject var nav: AppNavigation
+    @ObservedObject var state: AppState
+    @ObservedObject var permissions: PermissionsModel
+    var onRefresh: () -> Void
+    var onHotkeyChanged: (HotkeyBinding) -> Void
+    var onSavedKey: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $nav.tab) {
+                ForEach(AppTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
+
+            Divider()
+
+            Group {
+                switch nav.tab {
+                case .home:
+                    HomeView(
+                        state: state,
+                        onGoSettings: { nav.tab = .settings },
+                        onGoSetup: { nav.tab = .setup },
+                        onRefresh: onRefresh
+                    )
+                case .settings:
+                    SettingsView(
+                        state: state,
+                        onHotkeyChanged: onHotkeyChanged,
+                        onSavedKey: onSavedKey,
+                        onGoSetup: { nav.tab = .setup },
+                        onGoHome: { nav.tab = .home }
+                    )
+                case .setup:
+                    OnboardingView(
+                        permissions: permissions,
+                        state: state,
+                        onGoHome: { nav.tab = .home },
+                        onGoSettings: { nav.tab = .settings }
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(width: 480, height: 620)
+        .onAppear { onRefresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            onRefresh()
+        }
+    }
+}
+
 // MARK: - Home
 
 struct HomeView: View {
     @ObservedObject var state: AppState
-    var onSettings: () -> Void
-    var onPermissions: () -> Void
+    var onGoSettings: () -> Void
+    var onGoSetup: () -> Void
     var onRefresh: () -> Void
 
     var body: some View {
@@ -388,9 +398,9 @@ struct HomeView: View {
             statusCard
 
             HStack(spacing: 10) {
-                Button("Settings…") { onSettings() }
+                Button("API key & hotkey") { onGoSettings() }
                     .buttonStyle(.borderedProminent)
-                Button("Permissions…") { onPermissions() }
+                Button("Permissions") { onGoSetup() }
                 Spacer()
                 Button("Refresh") { onRefresh() }
                     .controlSize(.small)
@@ -399,27 +409,30 @@ struct HomeView: View {
             Spacer()
         }
         .padding(24)
-        .frame(width: 420, height: 420)
-        .onAppear { onRefresh() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            onRefresh()
-        }
     }
 
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            statusLine(
-                ok: state.permissionsOK,
-                title: state.permissionsOK ? "Permissions ready" : "Permissions need attention",
-                detail: state.permissionsOK
-                    ? "Mic, Accessibility, Input Monitoring look good."
-                    : "Open Permissions to finish setup."
-            )
-            statusLine(
-                ok: state.keyConfigured,
-                title: state.keyConfigured ? "API key configured" : "API key missing",
-                detail: state.keyConfigured ? "Stored on this Mac only." : "Add a key in Settings."
-            )
+            Button(action: onGoSetup) {
+                statusLine(
+                    ok: state.permissionsOK,
+                    title: state.permissionsOK ? "Permissions ready" : "Permissions need attention",
+                    detail: state.permissionsOK
+                        ? "Mic, Accessibility, Input Monitoring look good."
+                        : "Open Setup to finish permissions."
+                )
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onGoSettings) {
+                statusLine(
+                    ok: state.keyConfigured,
+                    title: state.keyConfigured ? "API key configured" : "API key missing",
+                    detail: state.keyConfigured ? "Stored on this Mac only." : "Add a key in Settings."
+                )
+            }
+            .buttonStyle(.plain)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text("Hotkey")
                     .font(.system(size: 12, weight: .semibold))
@@ -457,6 +470,10 @@ struct HomeView: View {
                 Text(title).font(.system(size: 13, weight: .semibold))
                 Text(detail).font(.system(size: 11)).foregroundStyle(.secondary)
             }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
     }
 }
@@ -467,8 +484,8 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
     var onHotkeyChanged: (HotkeyBinding) -> Void
     var onSavedKey: () -> Void
-    var onOpenPermissions: () -> Void
-    var onClose: () -> Void
+    var onGoSetup: () -> Void
+    var onGoHome: () -> Void
 
     @State private var config = VocalisConfig.load()
     @State private var pastedKey = ""
@@ -483,6 +500,9 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Settings")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
+                Text("API key, hotkey, and usage for this Mac.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
 
                 sectionHeader("Hotkey")
                 VStack(alignment: .leading, spacing: 8) {
@@ -541,29 +561,22 @@ struct SettingsView: View {
                 .padding(12)
                 .background(cardBackground)
 
-                sectionHeader("About")
-                Text("Vocalis — hold-to-talk dictation for Mac.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-
                 if !state.statusMessage.isEmpty {
                     Text(state.statusMessage).font(.callout).foregroundStyle(.secondary)
                 }
 
                 HStack {
-                    Button("Open Permissions…") { onOpenPermissions() }
+                    Button("Permissions…") { onGoSetup() }
                     Spacer()
-                    Button("Done") {
+                    Button("Back to Home") {
                         stopRecording(cancelled: true)
-                        onClose()
+                        onGoHome()
                     }
                     .keyboardShortcut(.defaultAction)
                 }
             }
             .padding(24)
-            .frame(width: 480)
         }
-        .frame(width: 480, height: 600)
         .onAppear {
             config = VocalisConfig.load()
             state.refresh(
@@ -608,7 +621,7 @@ struct SettingsView: View {
     }
 
     private func handleRecord(_ event: NSEvent) {
-        if event.type == .keyDown && event.keyCode == 53 { // Esc
+        if event.type == .keyDown && event.keyCode == 53 {
             stopRecording(cancelled: true)
             return
         }
@@ -676,18 +689,19 @@ struct SettingsView: View {
 
 struct OnboardingView: View {
     @ObservedObject var permissions: PermissionsModel
-    var hotkeyLabel: String
-    var onClose: () -> Void
+    @ObservedObject var state: AppState
+    var onGoHome: () -> Void
+    var onGoSettings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Vocalis Setup")
-                .font(.system(size: 26, weight: .bold, design: .rounded))
+            Text("Setup")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
             Text("Allow Microphone, Accessibility, and Input Monitoring so hold-to-talk can record and paste.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Current hotkey: \(hotkeyLabel)")
+            Text("Current hotkey: \(state.hotkeyLabel)")
                 .font(.system(size: 13, weight: .medium))
 
             VStack(alignment: .leading, spacing: 12) {
@@ -725,16 +739,35 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if !state.keyConfigured {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill").foregroundStyle(.orange)
+                    Text("API key still missing — add it in Settings when permissions are done.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.orange.opacity(0.08))
+                )
+            }
+
             Spacer()
             HStack {
                 Button("Refresh status") { permissions.refresh() }
                 Spacer()
-                Button("Done") { onClose() }
+                Button("API key…") { onGoSettings() }
+                Button(permissions.snapshot.allCriticalGranted && permissions.snapshot.inputMonitoring
+                       ? "Continue to Home"
+                       : "Back to Home") { onGoHome() }
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
-        .frame(width: 460, height: 500)
         .onAppear { permissions.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
