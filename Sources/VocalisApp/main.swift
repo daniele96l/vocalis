@@ -4,28 +4,50 @@ import Combine
 import SwiftUI
 import VocalisCore
 
-// MARK: - Theme (Notion-simple: flat, quiet, no gradient chrome)
+// MARK: - Theme (Notion-quiet: monochrome, motion over color)
 
 enum VocalisTheme {
     static let accent = Color.primary
-    static let ok = Color(red: 0.15, green: 0.55, blue: 0.35)
-    static let warn = Color(red: 0.75, green: 0.45, blue: 0.12)
-    static let border = Color.primary.opacity(0.12)
-    static let fill = Color.primary.opacity(0.04)
+    static let ok = Color(red: 0.18, green: 0.52, blue: 0.38)
+    static let warn = Color(red: 0.72, green: 0.42, blue: 0.14)
+    static let border = Color.primary.opacity(0.10)
+    static let fill = Color.primary.opacity(0.035)
+    static let hover = Color.primary.opacity(0.045)
 
-    static let display = Font.system(size: 28, weight: .semibold)
+    static let display = Font.system(size: 30, weight: .semibold, design: .default)
     static let title = Font.system(size: 20, weight: .semibold)
     static let body = Font.system(size: 13, weight: .regular)
     static let label = Font.system(size: 12, weight: .medium)
     static let caption = Font.system(size: 11, weight: .regular)
 }
 
+enum AppVersion {
+    static let fallbackMarketing = "0.1.2"
+
+    static var marketing: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? fallbackMarketing
+    }
+
+    static var display: String { "v\(marketing)" }
+}
+
 struct AtmosphereBackground: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        (scheme == .dark ? Color(red: 0.12, green: 0.12, blue: 0.12) : Color(red: 1, green: 1, blue: 1))
-            .ignoresSafeArea()
+        ZStack {
+            (scheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.11) : Color(red: 0.99, green: 0.99, blue: 0.985))
+            // Soft vertical wash — barely there, keeps the surface from feeling flat.
+            LinearGradient(
+                colors: scheme == .dark
+                    ? [Color.white.opacity(0.03), .clear, Color.black.opacity(0.12)]
+                    : [Color.black.opacity(0.015), .clear, Color.black.opacity(0.03)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -34,13 +56,13 @@ struct GlassCard<Content: View>: View {
 
     var body: some View {
         content
-            .padding(12)
+            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(VocalisTheme.fill)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(VocalisTheme.border, lineWidth: 1)
                     )
             )
@@ -54,13 +76,15 @@ struct AccentButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(scheme == .dark ? Color.black : Color.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.primary)
-                    .opacity(configuration.isPressed ? 0.75 : 1)
             )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.88 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: configuration.isPressed)
     }
 }
 
@@ -69,17 +93,29 @@ struct QuietButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(.primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .strokeBorder(VocalisTheme.border, lineWidth: 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.clear)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(configuration.isPressed ? VocalisTheme.hover : Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(VocalisTheme.border, lineWidth: 1)
                     )
             )
-            .opacity(configuration.isPressed ? 0.6 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: configuration.isPressed)
+    }
+}
+
+/// Drops the system focus rectangle around controls (macOS draws it even on `.plain` buttons).
+struct HideFocusRing: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.focusEffectDisabled()
+        } else {
+            content
+        }
     }
 }
 
@@ -487,19 +523,23 @@ struct RootView: View {
 
             VStack(spacing: 0) {
                 TabStrip(selection: $nav.tab)
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 22)
                     .padding(.top, 44)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, 14)
 
                 Group {
                     switch nav.tab {
                     case .home:
                         HomeView(
                             state: state,
-                            onGoSettings: { nav.tab = .settings },
-                            onGoSetup: { nav.tab = .setup },
+                            onGoSettings: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .settings } },
+                            onGoSetup: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .setup } },
                             onRefresh: onRefresh
                         )
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 6)),
+                            removal: .opacity
+                        ))
                     case .settings:
                         SettingsView(
                             state: state,
@@ -507,18 +547,27 @@ struct RootView: View {
                             onSavedKey: onSavedKey,
                             onInputDeviceChanged: onInputDeviceChanged,
                             onModelsChanged: onModelsChanged,
-                            onGoSetup: { nav.tab = .setup },
-                            onGoHome: { nav.tab = .home }
+                            onGoSetup: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .setup } },
+                            onGoHome: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .home } }
                         )
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 6)),
+                            removal: .opacity
+                        ))
                     case .setup:
                         OnboardingView(
                             permissions: permissions,
                             state: state,
-                            onGoHome: { nav.tab = .home },
-                            onGoSettings: { nav.tab = .settings }
+                            onGoHome: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .home } },
+                            onGoSettings: { withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { nav.tab = .settings } }
                         )
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 6)),
+                            removal: .opacity
+                        ))
                     }
                 }
+                .animation(.spring(response: 0.38, dampingFraction: 0.88), value: nav.tab)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
@@ -532,27 +581,42 @@ struct RootView: View {
 
 struct TabStrip: View {
     @Binding var selection: AppTab
+    @Namespace private var tabNS
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             ForEach(AppTab.allCases) { tab in
                 Button {
-                    selection = tab
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                        selection = tab
+                    }
                 } label: {
                     Text(tab.rawValue)
                         .font(.system(size: 13, weight: selection == tab ? .semibold : .regular))
                         .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 7)
+                        .contentShape(Rectangle())
                         .overlay(alignment: .bottom) {
-                            Rectangle()
-                                .fill(selection == tab ? Color.primary : Color.clear)
-                                .frame(height: 1.5)
+                            if selection == tab {
+                                Capsule(style: .continuous)
+                                    .fill(Color.primary)
+                                    .frame(height: 2)
+                                    .matchedGeometryEffect(id: "tab-underline", in: tabNS)
+                                    .padding(.horizontal, 10)
+                            }
                         }
                 }
                 .buttonStyle(.plain)
+                // Kill the macOS keyboard focus ring — selection is the underline only.
+                .focusable(false)
+                .modifier(HideFocusRing())
             }
             Spacer(minLength: 0)
+            Text(AppVersion.display)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.tertiary)
+                .padding(.trailing, 2)
         }
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -570,19 +634,30 @@ struct HomeView: View {
     var onGoSetup: () -> Void
     var onRefresh: () -> Void
 
+    @State private var appeared = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Vocalis")
-                    .font(VocalisTheme.display)
-                Text("Hold \(shortHotkey) to speak. Release to clean up and paste.")
-                    .font(VocalisTheme.body)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Vocalis")
+                            .font(VocalisTheme.display)
+                        Text("Hold \(shortHotkey) to speak. Release to clean up and paste.")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    HomeIdleWave()
+                        .frame(width: 72, height: 28)
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : 4)
+                }
             }
 
             VStack(alignment: .leading, spacing: 0) {
-                Button(action: onGoSetup) {
+                HoverRow(action: onGoSetup) {
                     statusLine(
                         ok: state.permissionsOK,
                         title: state.permissionsOK ? "Permissions ready" : "Permissions need attention",
@@ -591,11 +666,10 @@ struct HomeView: View {
                             : "Open Setup to finish permissions."
                     )
                 }
-                .buttonStyle(.plain)
 
                 thinRule
 
-                Button(action: onGoSettings) {
+                HoverRow(action: onGoSettings) {
                     statusLine(
                         ok: state.keyConfigured,
                         title: state.keyConfigured ? "API keys ready" : "API key missing",
@@ -604,7 +678,6 @@ struct HomeView: View {
                             : "Add OpenAI and/or xAI keys in Settings."
                     )
                 }
-                .buttonStyle(.plain)
 
                 thinRule
 
@@ -613,18 +686,18 @@ struct HomeView: View {
                     Spacer(minLength: 12)
                     metaBlock(title: "Usage today", value: state.usageToday, detail: state.usageTodayDetail)
                 }
-                .padding(.vertical, 10)
+                .padding(.vertical, 12)
 
                 thinRule
 
                 metaBlock(title: "Microphone", value: state.micDeviceName, detail: "Change in Settings")
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 12)
 
                 if !state.hotkeyWarning.isEmpty {
                     Text(state.hotkeyWarning)
                         .font(VocalisTheme.caption)
                         .foregroundStyle(VocalisTheme.warn)
-                        .padding(.bottom, 4)
+                        .padding(.bottom, 6)
                 }
             }
             .padding(.horizontal, 2)
@@ -642,8 +715,15 @@ struct HomeView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
-        .padding(.top, 8)
+        .padding(.top, 4)
         .padding(.bottom, 20)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 8)
+        .onAppear {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                appeared = true
+            }
+        }
     }
 
     private var shortHotkey: String {
@@ -657,7 +737,7 @@ struct HomeView: View {
     }
 
     private func metaBlock(title: String, value: String, detail: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title)
                 .font(VocalisTheme.caption)
                 .foregroundStyle(.secondary)
@@ -687,7 +767,50 @@ struct HomeView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
+    }
+}
+
+/// Soft hover highlight for tappable status rows.
+struct HoverRow<Content: View>: View {
+    var action: () -> Void
+    @ViewBuilder var content: Content
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            content
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(hovering ? VocalisTheme.hover : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .modifier(HideFocusRing())
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// Decorative idle waveform on Home — always gently moving.
+struct HomeIdleWave: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: false)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 2.5) {
+                ForEach(0..<9, id: \.self) { i in
+                    let phase = Double(i) * 0.48
+                    let amp = 0.28 + 0.72 * abs(sin(t * 2.6 + phase))
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.18 + 0.35 * amp))
+                        .frame(width: 3.5, height: max(4, 26 * amp))
+                }
+            }
+        }
     }
 }
 

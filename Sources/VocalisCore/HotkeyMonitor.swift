@@ -23,7 +23,8 @@ public final class HotkeyMonitor {
     private var watchdog: Timer?
     /// Option/Shift alone can flicker flagsChanged and end the hold mid-sentence.
     private var releaseDebounceTask: Task<Void, Never>?
-    private let releaseDebounceNs: UInt64 = 180_000_000
+    /// Longer than a typical flagsChanged blip so hold-to-talk survives mid-phrase flicker.
+    private let releaseDebounceNs: UInt64 = 350_000_000
 
     public init(binding: HotkeyBinding = .rightOption) {
         self.binding = binding
