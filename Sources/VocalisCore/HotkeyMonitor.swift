@@ -52,14 +52,14 @@ public final class HotkeyMonitor {
             return monitor.handle(type: type, event: event)
         }
 
-        // Prefer session tap: works system-wide when Accessibility is On, including
-        // when Vocalis is backgrounded / has no window. HID tapCreate often returns
-        // non-nil without Input Monitoring but then delivers no background events —
-        // so it must not win the race over session.
-        let locations: [(CGEventTapLocation, String)] = [
-            (.cgSessionEventTap, "session"),
-            (.cghidEventTap, "hid"),
-        ]
+        // When Input Monitoring is On (TCC granted), prefer HID. Otherwise prefer
+        // session tap (Accessibility) — HID tapCreate can return non-nil while Off
+        // and then deliver no background events.
+        let imOn = PermissionProbe.listenEventTCCState() == .granted
+        let locations: [(CGEventTapLocation, String)] = imOn
+            ? [(.cghidEventTap, "hid"), (.cgSessionEventTap, "session")]
+            : [(.cgSessionEventTap, "session"), (.cghidEventTap, "hid")]
+
 
         var installed: CFMachPort?
         var backend = "none"

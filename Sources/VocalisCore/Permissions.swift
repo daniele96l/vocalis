@@ -82,6 +82,15 @@ public enum AppInstallProbe {
     }
 }
 
+public enum ListenEventTCCState: Equatable, Sendable {
+    /// In the Input Monitoring list and allowed.
+    case granted
+    /// Typically listed but toggle Off (or explicitly denied).
+    case denied
+    /// Not yet registered — may be missing from the list.
+    case unknown
+}
+
 public enum PermissionProbe {
     public static func microphoneGranted() -> Bool {
         // Status is for the running code identity (this process / bundle).
@@ -90,6 +99,15 @@ public enum PermissionProbe {
 
     public static func accessibilityGranted() -> Bool {
         Paster.isAccessibilityTrusted(prompt: false)
+    }
+
+    /// TCC listen-event state (IOHID). Denied usually means Vocalis is listed but Off.
+    public static func listenEventTCCState() -> ListenEventTCCState {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted: return .granted
+        case kIOHIDAccessTypeDenied: return .denied
+        default: return .unknown
+        }
     }
 
     /// Register with TCC Input Monitoring and surface the system prompt when possible.
@@ -216,29 +234,40 @@ public final class PermissionsModel: ObservableObject {
                 "Multiple Vocalis copies found. Using \(path). Grant Mic / Accessibility / Input Monitoring for this copy (also present: \(list)). Quit the other instance if it is running."
         }
 
+        let tcc = PermissionProbe.listenEventTCCState()
         let imHelp: String
         let statusMsg: String
         if next.inputMonitoring {
             imHelp = ""
             statusMsg = ""
         } else {
-            imHelp =
-                """
-                If Vocalis is missing from Input Monitoring: Enable reveals the app in Finder — click + in Settings, select that Vocalis.app (\(addPath)), toggle On. \
-                If listed but Off: turn the toggle On. Then return, press any key, Refresh.
-                """
+            switch tcc {
+            case .denied:
+                // Listed in System Settings but toggle Off — don't tell the user to + add.
+                imHelp =
+                    "Vocalis is already in Input Monitoring — turn its toggle On, then return here, press any key, and Refresh."
+            case .granted:
+                imHelp =
+                    "macOS shows access, but Vocalis still needs a key press through the hotkey tap. Press any key once, then Refresh."
+            case .unknown:
+                imHelp =
+                    "Open Input Monitoring. If Vocalis is listed, turn the toggle On. If it’s missing, click + and choose \(addPath), then toggle On. Return, press a key, Refresh."
+            }
             if !packaged {
                 statusMsg =
                     "Running unpackaged binary — Input Monitoring may not list it. Install Vocalis.app and relaunch."
             } else if !installed {
                 statusMsg =
-                    "Hotkey tap not installed — turn on Accessibility and Input Monitoring, then Refresh."
+                    "Hotkey tap not installed — turn on Accessibility, then Input Monitoring (toggle On), then Refresh."
+            } else if tcc == .denied {
+                statusMsg =
+                    "Synced: Vocalis is listed under Input Monitoring but the toggle is Off — flip it On."
             } else if !hidBackend {
                 statusMsg =
-                    "Hotkey can work in other apps once Accessibility is On. For full Input Monitoring: + add \(addPath), toggle On, press a key."
+                    "Hotkey can work with Accessibility On. For Input Monitoring: open Settings, turn Vocalis On (or + add if missing), press a key."
             } else {
                 statusMsg =
-                    "Waiting for a key — if Vocalis is missing from Input Monitoring, use + to add \(addPath), toggle On, then press a key."
+                    "Waiting for a key after Input Monitoring is On — press any key, then Refresh."
             }
         }
 
@@ -288,17 +317,19 @@ public final class PermissionsModel: ObservableObject {
     }
 
     public func openInputMonitoringSettings(request: Bool = true) {
+        let tccBefore = PermissionProbe.listenEventTCCState()
         if request {
             _ = PermissionProbe.requestInputMonitoring()
             hotkeyRetry?()
-            // Help the common case where Vocalis never appears in the list:
-            // put the .app path on the pasteboard and reveal it in Finder so the
-            // user can click + in Input Monitoring and select / drag it.
-            let addURL = URL(fileURLWithPath: AppInstallProbe.preferredManualAddPath)
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(addURL.path, forType: .string)
-            if FileManager.default.fileExists(atPath: addURL.path) {
-                NSWorkspace.shared.activateFileViewerSelecting([addURL])
+            // Only reveal Finder when Vocalis is probably missing from the list.
+            // If TCC says Denied, it's already listed — user just needs the toggle On.
+            if tccBefore == .unknown {
+                let addURL = URL(fileURLWithPath: AppInstallProbe.preferredManualAddPath)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(addURL.path, forType: .string)
+                if FileManager.default.fileExists(atPath: addURL.path) {
+                    NSWorkspace.shared.activateFileViewerSelecting([addURL])
+                }
             }
         }
         openPrivacyPane(legacyQuery: "Privacy_ListenEvent", modernPath: "Privacy_ListenEvent")
