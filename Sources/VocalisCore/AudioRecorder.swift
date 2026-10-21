@@ -19,7 +19,8 @@ public enum AudioRecorderError: LocalizedError {
 
 /// Captures mic audio for Whisper.
 /// Non-Bluetooth: AVAudioEngine on the system/default route (no CurrentDevice bind).
-/// Bluetooth (AirPods): AudioQueue — binding CurrentDevice on AVAudioEngine yields 0 buffers.
+/// Bluetooth (AirPods): AudioQueue only — engine “starts” then goes silent mid-hold on HFP.
+/// Never bind CurrentDevice on BT (zeroes buffers after ~1–2s).
 /// Optional chunk rotation feeds live/parallel STT while the hotkey is held.
 @MainActor
 public final class AudioRecorder: NSObject {
@@ -149,19 +150,11 @@ public final class AudioRecorder: NSObject {
         finishBluetoothRoute()
     }
 
-    /// Prefer engine on the already-activated default input (no CurrentDevice bind).
-    /// AudioQueue is the Bluetooth fallback — also without CurrentDevice (that zeroes HFP).
-    private func startCapture(device: MicDevice?) throws {
-        if isBluetoothSession {
-            do {
-                try startEngine(device: nil) // nil → never bind CurrentDevice
-                NSLog("Vocalis: Bluetooth capture via engine (default route)")
-                return
-            } catch {
-                NSLog("Vocalis: engine failed on BT (\(error.localizedDescription)); trying AudioQueue")
-                tearDownCapture(deleteFile: true)
-                try startAudioQueue(device: device)
-            }
+    /// Bluetooth → AudioQueue only (engine goes silent mid-hold on AirPods HFP).
+    /// Wired / built-in → AVAudioEngine.
+    private func startCapture(device: MicDevice?, forceAudioQueue: Bool = false) throws {
+        if isBluetoothSession || forceAudioQueue {
+            try startAudioQueue(device: device)
         } else {
             try startEngine(device: device)
         }
@@ -224,32 +217,56 @@ public final class AudioRecorder: NSObject {
         chunkTask = nil
     }
 
-    /// AirPods HFP often goes silent mid-hold; restart capture once if energy dies.
+    /// AirPods HFP often goes silent mid-hold (or stops delivering buffers while the
+    /// meter peak-hold stays high). Restart AudioQueue if energy dies or buffers stall.
     private func startSilenceWatchIfNeeded() {
         stopSilenceWatch()
         guard isBluetoothSession else { return }
         silenceWatchTask = Task { [weak self] in
             var silentTicks = 0
+            var lastBuffers = 0
+            var stalledTicks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self, self.isRecording else { return }
                     let level = self.currentLevel()
+                    let buffers = self.currentBufferCount()
                     let heard: Bool = {
                         self.levelLock.lock()
                         defer { self.levelLock.unlock() }
                         return self.sawAudibleSignal
                     }()
+
+                    if buffers == lastBuffers {
+                        stalledTicks += 1
+                    } else {
+                        stalledTicks = 0
+                        lastBuffers = buffers
+                    }
+
                     if heard, level < 0.012 {
                         silentTicks += 1
+                    } else if !heard {
+                        silentTicks = 0
                     } else {
                         silentTicks = 0
                     }
-                    // ~0.8s of silence after we already heard speech
-                    if silentTicks >= 4, self.silenceRestarts < 2 {
+
+                    // ~0.8s near-zero energy, or ~0.6s with no new buffers after speech.
+                    let shouldRestart = self.silenceRestarts < 4
+                        && (
+                            (heard && silentTicks >= 4)
+                            || (heard && stalledTicks >= 3)
+                            // Never heard anything but also no buffers for ~1.2s after start
+                            || (!heard && stalledTicks >= 6 && buffers < 8)
+                        )
+                    if shouldRestart {
                         silentTicks = 0
+                        stalledTicks = 0
                         self.restartCaptureAfterSilence()
+                        lastBuffers = self.currentBufferCount()
                     }
                 }
             }
@@ -264,7 +281,7 @@ public final class AudioRecorder: NSObject {
     private func restartCaptureAfterSilence() {
         guard writeTarget != nil else { return }
         silenceRestarts += 1
-        NSLog("Vocalis: mic went silent mid-hold — restarting capture (#\(silenceRestarts))")
+        NSLog("Vocalis: mic went silent mid-hold — restarting AudioQueue (#\(silenceRestarts))")
         // Keep the same WAV so we do not lose earlier speech.
         let existing = writeTarget
         tearDownCaptureKeepingWriter()
@@ -274,7 +291,8 @@ public final class AudioRecorder: NSObject {
         do {
             _ = MicDevices.activateInput(uid: preferredDeviceUID)
             let device = MicDevices.device(uid: preferredDeviceUID)
-            try startCapture(device: device)
+            // Always AudioQueue after a stall — engine is what usually died.
+            try startCapture(device: device, forceAudioQueue: true)
         } catch {
             NSLog("Vocalis: silence restart failed: \(error.localizedDescription)")
             writeTarget = existing
