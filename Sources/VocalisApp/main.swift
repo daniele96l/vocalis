@@ -410,6 +410,8 @@ final class AppState: ObservableObject {
     @Published var hotkeyLabel = HotkeyBinding.rightOption.displayName
     @Published var hotkeyConfig = HotkeyBinding.rightOption.configValue
     @Published var keyConfigured = false
+    @Published var keyStatusTitle = "API key missing"
+    @Published var keyStatusDetail = "Add OpenAI and/or xAI keys in Settings."
     @Published var permissionsOK = false
     @Published var inputMonitoringOK = false
     @Published var micOK = false
@@ -435,6 +437,7 @@ final class AppState: ObservableObject {
         hotkeyLabel = binding.displayName
         hotkeyConfig = binding.configValue
         keyConfigured = config.hasAPIKey
+        applyKeyStatus(config: config)
         micDeviceUID = config.inputDeviceID
         micDeviceName = MicDevices.displayName(forUID: config.inputDeviceID)
         if let permissions {
@@ -457,6 +460,31 @@ final class AppState: ObservableObject {
         usageTodayDetail = detail(report.today)
         usageWeekDetail = detail(report.week)
         usageTotalDetail = detail(report.total)
+    }
+
+    private func applyKeyStatus(config: VocalisConfig) {
+        if config.usesWhistleSTT {
+            let found = WhistleTranscriber.installation()
+            if !found.isReady {
+                keyStatusTitle = found.modelURL == nil ? "Whistle model missing" : "Whistle engine missing"
+                keyStatusDetail = found.modelURL == nil
+                    ? "Put the predownloaded whistle.cact in ~/.config/vocalis."
+                    : "Whistle model found. Put the needle engine beside it."
+                return
+            }
+            if ModelCatalog.isCleanupEnabled(config.cleanupModel) && !config.hasOpenAIKey {
+                keyStatusTitle = "Cleanup key missing"
+                keyStatusDetail = "Whistle is ready on this Mac. Add an OpenAI key, or turn cleanup off."
+                return
+            }
+            keyStatusTitle = "Local Whistle ready"
+            keyStatusDetail = "Transcription uses the predownloaded model on this Mac."
+            return
+        }
+        keyStatusTitle = keyConfigured ? "API keys ready" : "API key missing"
+        keyStatusDetail = keyConfigured
+            ? "OpenAI and/or xAI keys stored on this Mac."
+            : "Add OpenAI and/or xAI keys in Settings."
     }
 
     private func detail(_ t: UsageTotals) -> String {
@@ -598,10 +626,8 @@ struct HomeView: View {
                 Button(action: onGoSettings) {
                     statusLine(
                         ok: state.keyConfigured,
-                        title: state.keyConfigured ? "API keys ready" : "API key missing",
-                        detail: state.keyConfigured
-                            ? "OpenAI and/or xAI keys stored on this Mac."
-                            : "Add OpenAI and/or xAI keys in Settings."
+                        title: state.keyStatusTitle,
+                        detail: state.keyStatusDetail
                     )
                 }
                 .buttonStyle(.plain)
@@ -828,7 +854,7 @@ struct SettingsView: View {
                 sectionLabel("Cost & models")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Listening while you hold the hotkey is free — audio stays on this Mac. You pay only when you release: speech-to-text, then optional cleanup.")
+                        Text("Listening while you hold the hotkey is free — audio stays on this Mac. Whistle transcribes there too, using the predownloaded model. Cloud speech-to-text is billed when you release, then optional cleanup.")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -879,6 +905,12 @@ struct SettingsView: View {
                             .onChange(of: selectedSTT) { newValue in
                                 saveSTT(newValue)
                             }
+                            if ModelCatalog.isWhistleSTT(selectedSTT) {
+                                Text(WhistleTranscriber.statusDetail())
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
@@ -905,7 +937,7 @@ struct SettingsView: View {
                 sectionLabel("API keys")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Keys stay in ~/.config/vocalis on this Mac. Grok STT needs an xAI key; OpenAI models and cleanup need an OpenAI key.")
+                        Text("Keys stay in ~/.config/vocalis on this Mac. Whistle runs locally and needs no key. Grok STT needs an xAI key; OpenAI models and cleanup need an OpenAI key.")
                             .font(VocalisTheme.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -954,7 +986,7 @@ struct SettingsView: View {
                         usageRow("Today", cost: state.usageToday, detail: state.usageTodayDetail)
                         usageRow("This week", cost: state.usageWeek, detail: state.usageWeekDetail)
                         usageRow("All time", cost: state.usageTotal, detail: state.usageTotalDetail)
-                        Text("Local estimates (Grok ≈ $0.10/hr; OpenAI STT ≈ $0.18–$0.36/hr; cleanup is token-priced). Not provider billing.")
+                        Text("Local estimates (Whistle is free; Grok ≈ $0.10/hr; OpenAI STT ≈ $0.18–$0.36/hr; cleanup is token-priced). Not provider billing.")
                             .font(VocalisTheme.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1041,7 +1073,11 @@ struct SettingsView: View {
             try next.save()
             config = next
             onModelsChanged()
-            if ModelCatalog.isGrokSTT(model) {
+            if ModelCatalog.isWhistleSTT(model) {
+                state.statusMessage = WhistleTranscriber.installation().isReady
+                    ? "Using local Whistle."
+                    : WhistleTranscriber.statusDetail()
+            } else if ModelCatalog.isGrokSTT(model) {
                 state.statusMessage = next.hasXAIKey
                     ? "Using Grok Voice Transcribe."
                     : "Grok selected — add an xAI API key below."
@@ -1280,7 +1316,7 @@ struct OnboardingView: View {
                     .textSelection(.enabled)
 
                 if !state.keyConfigured {
-                    callout(text: "API key still missing — add it in Settings when permissions are done.")
+                    callout(text: state.keyStatusDetail)
                 }
 
                 HStack {

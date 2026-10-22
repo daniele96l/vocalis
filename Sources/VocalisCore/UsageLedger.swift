@@ -13,6 +13,7 @@ public enum OpenAIPricing {
     /// Published “estimated cost / minute” for file transcription.
     public static func sttUSDPerMinute(model: String) -> Double {
         let m = model.lowercased()
+        if ModelCatalog.isWhistleSTT(m) { return 0 }
         if m.hasPrefix("grok-voice-transcribe") || (m.hasPrefix("grok-") && m.contains("transcribe")) {
             return 0.10 / 60.0 // xAI REST: $0.10/hr
         }

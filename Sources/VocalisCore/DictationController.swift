@@ -193,7 +193,7 @@ public final class DictationController {
 
                 guard config.hasTranscriptionKey else {
                     try? FileManager.default.removeItem(at: audioURL)
-                    showError(config.usesGrokSTT ? "No xAI key" : "Bad key")
+                    showError(transcriptionUnavailableMessage)
                     return
                 }
                 if ModelCatalog.isCleanupEnabled(config.cleanupModel), !config.hasOpenAIKey {
@@ -260,6 +260,11 @@ public final class DictationController {
                 bubble.hide()
             }
         }
+    }
+
+    private var transcriptionUnavailableMessage: String {
+        if config.usesWhistleSTT { return WhistleTranscriber.unavailableReason() }
+        return config.usesGrokSTT ? "No xAI key" : "Bad key"
     }
 
     private func shortError(_ error: Error) -> String {

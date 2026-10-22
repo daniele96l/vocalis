@@ -84,13 +84,16 @@ public struct VocalisConfig: Equatable, Sendable {
     }
 
     public var usesGrokSTT: Bool { ModelCatalog.isGrokSTT(sttModel) }
+    public var usesWhistleSTT: Bool { ModelCatalog.isWhistleSTT(sttModel) }
 
     public var hasOpenAIKey: Bool { !resolvedAPIKey.isEmpty }
     public var hasXAIKey: Bool { !resolvedXAIKey.isEmpty }
 
     /// Ready to run speech-to-text for the selected STT model.
+    /// Whistle is local: ready when the predownloaded model and needle engine are on disk.
     public var hasTranscriptionKey: Bool {
-        usesGrokSTT ? hasXAIKey : hasOpenAIKey
+        if usesWhistleSTT { return WhistleTranscriber.installation().isReady }
+        return usesGrokSTT ? hasXAIKey : hasOpenAIKey
     }
 
     /// Ready to dictate (STT key + OpenAI key if cleanup is on).

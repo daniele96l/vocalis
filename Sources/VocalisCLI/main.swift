@@ -38,6 +38,10 @@ enum VocalisCLI {
               OPENAI_API_KEY     Preferred over config file key
               AI_GATEWAY_API_KEY Alternate key (OpenAI-compatible gateway)
 
+            Local STT:
+              stt_model = "whistle" uses the predownloaded whistle.cact
+              (default ~/.config/vocalis/whistle.cact) and the needle engine.
+
             Hotkey (default): hold Right Option
             Fallback: set hotkey = "ctrlShiftSpace" in config.toml
             """
@@ -163,6 +167,11 @@ enum VocalisCLI {
         print("  api key:    \(keySource)")
         print("  base_url:   \(config.baseURL)")
         print("  stt_model:  \(config.sttModel)")
+        if config.usesWhistleSTT {
+            let found = WhistleTranscriber.installation()
+            print("  whistle:    \(found.modelURL?.path ?? "missing model")")
+            print("  needle:     \(found.engineURL?.path ?? "missing engine")")
+        }
         print("  cleanup:    \(config.cleanupModel)")
         print("  hotkey:     \(config.hotkey)")
         print("  accessibility trusted: \(Paster.isAccessibilityTrusted(prompt: false))")
