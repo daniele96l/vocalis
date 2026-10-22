@@ -4,6 +4,9 @@ import Foundation
 
 public enum OpenAIClientError: LocalizedError {
     case missingKey
+    case missingWhistleModel
+    case missingWhistleEngine
+    case whistleFailed
     case emptyAudio
     case emptyTranscript
     case http(Int, String)
@@ -12,6 +15,9 @@ public enum OpenAIClientError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .missingKey: return "Bad key"
+        case .missingWhistleModel: return "No Whistle model"
+        case .missingWhistleEngine: return "No Whistle engine"
+        case .whistleFailed: return "Whistle failed"
         case .emptyAudio: return "Empty audio"
         case .emptyTranscript: return "Empty audio"
         case .http(let code, _):
@@ -50,10 +56,44 @@ public final class OpenAIClient: Sendable {
     }
 
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
+        if config.usesWhistleSTT {
+            return try await transcribeWithWhistle(audioURL: audioURL)
+        }
         if config.usesGrokSTT {
             return try await transcribeWithGrok(audioURL: audioURL)
         }
         return try await transcribeWithOpenAI(audioURL: audioURL)
+    }
+
+    private func transcribeWithWhistle(audioURL: URL) async throws -> TranscriptionResult {
+        let attrs = try FileManager.default.attributesOfItem(atPath: audioURL.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        if size < 200 { throw OpenAIClientError.emptyAudio }
+
+        let localDuration = Self.audioDurationSeconds(url: audioURL)
+        let text: String
+        do {
+            text = try await WhistleTranscriber.transcribe(
+                audioURL: audioURL,
+                languages: config.languages
+            )
+        } catch let error as WhistleError {
+            switch error {
+            case .missingModel: throw OpenAIClientError.missingWhistleModel
+            case .missingEngine: throw OpenAIClientError.missingWhistleEngine
+            case .emptyTranscript: throw OpenAIClientError.emptyTranscript
+            case .badResponse: throw OpenAIClientError.decode
+            case .failed: throw OpenAIClientError.whistleFailed
+            }
+        }
+
+        let result = TranscriptionResult(
+            text: text,
+            model: config.sttModel,
+            durationSeconds: localDuration
+        )
+        UsageLedger.recordSTT(model: result.model, audioSeconds: result.durationSeconds)
+        return result
     }
 
     private func transcribeWithGrok(audioURL: URL) async throws -> TranscriptionResult {

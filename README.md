@@ -62,6 +62,8 @@ cleanup_model = "gpt-4o-mini"
 hotkey = "rightOption"
 ```
 
+`stt_model = "whistle"` transcribes on this Mac with the predownloaded Whistle model. Put `whistle.cact` in `~/.config/vocalis/` (or leave it in the Hugging Face cache) and keep the `needle` engine beside it or on `PATH`. No API key is required for that speech-to-text step.
+
 ## Requirements
 
 - macOS 13+

@@ -72,9 +72,15 @@ public enum ModelCatalog {
     public static let cleanupOff = "off"
 
     public static let grokVoiceTranscribe = "grok-voice-transcribe-2.0"
+    public static let whistle = "whistle"
     public static let xaiSTTBaseURL = "https://api.x.ai/v1"
 
     public static let sttChoices: [Choice] = [
+        Choice(
+            rawValue: whistle,
+            title: "Whistle",
+            detail: "On this Mac — predownloaded model, free"
+        ),
         Choice(
             rawValue: grokVoiceTranscribe,
             title: "Grok Voice Transcribe 2.0",
@@ -106,6 +112,12 @@ public enum ModelCatalog {
         let m = model.lowercased()
         return m.hasPrefix("grok-voice-transcribe")
             || (m.hasPrefix("grok-") && m.contains("transcribe"))
+    }
+
+    /// Local Cactus Whistle. `whistle-local` is accepted from older config files.
+    public static func isWhistleSTT(_ model: String) -> Bool {
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return m == whistle || m == "whistle-local"
     }
 
     public static let cleanupChoices: [Choice] = [
