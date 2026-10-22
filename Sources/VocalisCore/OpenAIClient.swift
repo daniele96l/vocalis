@@ -130,6 +130,23 @@ public final class OpenAIClient: Sendable {
     }
 
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
+        if ModelCatalog.isLocalWhisperSTT(config.sttModel) {
+            let variant = WhisperLocalClient.resolveVariant(
+                fromSTTModel: config.sttModel,
+                configVariant: config.whisperModel
+            )
+            return try await WhisperLocalClient.shared.transcribe(
+                audioURL: audioURL,
+                variant: variant,
+                languages: config.languages
+            ) // WhisperLocalClient is @MainActor; caller is already async
+        }
+        if ModelCatalog.isLocalAppleSTT(config.sttModel) {
+            return try await LocalSpeechClient.transcribe(
+                audioURL: audioURL,
+                languages: config.languages
+            )
+        }
         if config.usesGrokSTT {
             return try await transcribeWithGrok(audioURL: audioURL)
         }

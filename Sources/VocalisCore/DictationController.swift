@@ -166,7 +166,10 @@ public final class DictationController {
             guard !Task.isCancelled else { return }
 
             do {
-                if self.config.streamingSTT, self.config.hasTranscriptionKey {
+                // Local Apple Speech works on the finished file — skip live chunks.
+                if self.config.streamingSTT,
+                   self.config.hasTranscriptionKey,
+                   !self.config.usesLocalSTT {
                     let live = LiveTranscriber(client: OpenAIClient(config: self.config))
                     self.liveTranscriber = live
                     self.recorder.chunkSeconds = LiveTranscriber.defaultChunkSeconds

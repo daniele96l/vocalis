@@ -1431,6 +1431,9 @@ struct AISettingsView: View {
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
     @State private var selectedCleanupStyle: CleanupStyle = VocalisConfig.load().resolvedCleanupStyle
     @State private var senseCheck: Bool = VocalisConfig.load().senseCheck
+    @State private var whisperVariant: String = VocalisConfig.load().whisperModel
+    @State private var whisperStatus = ""
+    @State private var whisperBusy = false
     @State private var streamingSTT: Bool = VocalisConfig.load().streamingSTT
 
     private var exampleHoldCost: String {
@@ -1536,6 +1539,52 @@ struct AISettingsView: View {
                             }
                         }
 
+                        if ModelCatalog.isLocalWhisperSTT(selectedSTT) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Whisper model size")
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                                Picker("Whisper size", selection: $whisperVariant) {
+                                    ForEach(WhisperLocalClient.variantChoices, id: \.id) { choice in
+                                        Text(choice.title).tag(choice.id)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .onChange(of: whisperVariant) { newValue in
+                                    saveWhisperVariant(newValue)
+                                }
+
+                                HStack(spacing: 8) {
+                                    Button(whisperBusy ? "Downloading…" : (WhisperLocalClient.isModelDownloaded(variant: whisperVariant) ? "Reload model" : "Download model")) {
+                                        downloadWhisperModel()
+                                    }
+                                    .buttonStyle(AccentButtonStyle())
+                                    .disabled(whisperBusy)
+
+                                    Text(
+                                        WhisperLocalClient.isModelDownloaded(variant: whisperVariant)
+                                            ? "Ready on disk"
+                                            : "Not downloaded yet"
+                                    )
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+
+                                if !whisperStatus.isEmpty {
+                                    Text(whisperStatus)
+                                        .font(VocalisTheme.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Text("Models save under ~/Library/Application Support/Vocalis/WhisperKit — first download needs network, then works offline.")
+                                    .font(VocalisTheme.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Cleanup model")
                                 .font(VocalisTheme.caption)
@@ -1627,7 +1676,13 @@ struct AISettingsView: View {
                 : ModelCatalog.cleanupOff
             selectedCleanupStyle = config.resolvedCleanupStyle
             senseCheck = config.senseCheck
+            whisperVariant = config.whisperModel.isEmpty ? WhisperLocalClient.defaultVariant : config.whisperModel
             streamingSTT = config.streamingSTT
+            if ModelCatalog.isLocalWhisperSTT(selectedSTT) {
+                whisperStatus = WhisperLocalClient.isModelDownloaded(variant: whisperVariant)
+                    ? "Whisper \(whisperVariant) is on this Mac."
+                    : "Download Whisper \(whisperVariant) once to use offline."
+            }
             micDevices = MicDevices.listInputs()
             state.refresh(
                 permissions: nil,
@@ -1645,7 +1700,11 @@ struct AISettingsView: View {
             try next.save()
             config = next
             onModelsChanged()
-            if next.usesLicense {
+            if ModelCatalog.isLocalWhisperSTT(model) {
+                state.statusMessage = "Using Local Whisper — download the model if needed."
+            } else if ModelCatalog.isLocalAppleSTT(model) {
+                state.statusMessage = "Using Local Apple Speech (on-device when available)."
+            } else if next.usesLicense {
                 state.statusMessage = "Model updated (licensed)."
             } else if ModelCatalog.isGrokSTT(model) {
                 state.statusMessage = next.hasXAIKey
@@ -1717,6 +1776,38 @@ struct AISettingsView: View {
                 : "Sense check off."
         } catch {
             state.statusMessage = "Could not save setting."
+        }
+    }
+
+    private func saveWhisperVariant(_ variant: String) {
+        do {
+            var next = VocalisConfig.load()
+            next.whisperModel = variant
+            try next.save()
+            whisperVariant = variant
+            onModelsChanged()
+            whisperStatus = WhisperLocalClient.isModelDownloaded(variant: variant)
+                ? "Whisper \(variant) is on this Mac."
+                : "Download Whisper \(variant) once to use offline."
+            state.statusMessage = "Whisper size: \(variant)."
+        } catch {
+            state.statusMessage = "Could not save Whisper size."
+        }
+    }
+
+    private func downloadWhisperModel() {
+        whisperBusy = true
+        whisperStatus = "Downloading Whisper \(whisperVariant)… (first time can take a few minutes)"
+        Task { @MainActor in
+            do {
+                try await WhisperLocalClient.shared.prepare(variant: whisperVariant)
+                whisperStatus = "Whisper \(whisperVariant) ready."
+                state.statusMessage = "Local Whisper model ready."
+            } catch {
+                whisperStatus = "Download failed: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+                state.statusMessage = "Whisper download failed."
+            }
+            whisperBusy = false
         }
     }
 }

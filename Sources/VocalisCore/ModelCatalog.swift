@@ -72,9 +72,23 @@ public enum ModelCatalog {
     public static let cleanupOff = "off"
 
     public static let grokVoiceTranscribe = "grok-voice-transcribe-2.0"
+    /// Apple Speech framework (on-device when supported) — free, no API key.
+    public static let localAppleSpeech = "local-apple-speech"
+    /// Local OpenAI Whisper via WhisperKit (downloads once, then offline).
+    public static let localWhisper = "local-whisper"
     public static let xaiSTTBaseURL = "https://api.x.ai/v1"
 
     public static let sttChoices: [Choice] = [
+        Choice(
+            rawValue: localWhisper,
+            title: "Local Whisper",
+            detail: "On-device Whisper — free after download"
+        ),
+        Choice(
+            rawValue: localAppleSpeech,
+            title: "Local (Apple Speech)",
+            detail: "System speech — free, no download"
+        ),
         Choice(
             rawValue: grokVoiceTranscribe,
             title: "Grok Voice Transcribe 2.0",
@@ -106,6 +120,20 @@ public enum ModelCatalog {
         let m = model.lowercased()
         return m.hasPrefix("grok-voice-transcribe")
             || (m.hasPrefix("grok-") && m.contains("transcribe"))
+    }
+
+    public static func isLocalSTT(_ model: String) -> Bool {
+        isLocalWhisperSTT(model) || isLocalAppleSTT(model)
+    }
+
+    public static func isLocalAppleSTT(_ model: String) -> Bool {
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return m == localAppleSpeech || m == "apple-speech"
+    }
+
+    public static func isLocalWhisperSTT(_ model: String) -> Bool {
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return m == localWhisper || m.hasPrefix("local-whisper")
     }
 
     public static let cleanupChoices: [Choice] = [

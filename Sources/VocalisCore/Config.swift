@@ -15,6 +15,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public var cleanupStyle: String
     /// Extra final pass: “would someone really say this?” — off by default.
     public var senseCheck: Bool
+    /// WhisperKit variant when STT is Local Whisper: tiny / base / small.
+    public var whisperModel: String
     public var hotkey: String
     /// Core Audio device UID; empty = system default input.
     public var inputDeviceID: String
@@ -31,6 +33,7 @@ public struct VocalisConfig: Equatable, Sendable {
     public static let defaultCleanupModel = "gpt-4o-mini"
     public static let defaultCleanupStyle = CleanupStyle.default.rawValue
     public static let defaultSenseCheck = false
+    public static let defaultWhisperModel = "base"
     public static let defaultHotkey = "rightOption"
     public static let defaultStreamingSTT = true
     public static let defaultLanguages: [String] = LanguageCatalog.defaultCodes
@@ -117,6 +120,7 @@ public struct VocalisConfig: Equatable, Sendable {
         cleanupModel: String = defaultCleanupModel,
         cleanupStyle: String = defaultCleanupStyle,
         senseCheck: Bool = defaultSenseCheck,
+        whisperModel: String = defaultWhisperModel,
         hotkey: String = defaultHotkey,
         inputDeviceID: String = "",
         streamingSTT: Bool = defaultStreamingSTT,
@@ -131,6 +135,7 @@ public struct VocalisConfig: Equatable, Sendable {
         self.cleanupModel = cleanupModel
         self.cleanupStyle = CleanupStyle.parse(cleanupStyle).rawValue
         self.senseCheck = senseCheck
+        self.whisperModel = whisperModel.isEmpty ? Self.defaultWhisperModel : whisperModel
         self.hotkey = hotkey
         self.inputDeviceID = inputDeviceID
         self.streamingSTT = streamingSTT
@@ -157,12 +162,14 @@ public struct VocalisConfig: Equatable, Sendable {
     }
 
     public var usesGrokSTT: Bool { ModelCatalog.isGrokSTT(sttModel) }
+    public var usesLocalSTT: Bool { ModelCatalog.isLocalSTT(sttModel) }
 
     public var hasOpenAIKey: Bool { !resolvedAPIKey.isEmpty }
     public var hasXAIKey: Bool { !resolvedXAIKey.isEmpty }
 
     /// Ready to run speech-to-text for the selected STT model (license or provider key).
     public var hasTranscriptionKey: Bool {
+        if usesLocalSTT { return true }
         if usesLicense { return true }
         return usesGrokSTT ? hasXAIKey : hasOpenAIKey
     }
@@ -198,6 +205,7 @@ public struct VocalisConfig: Equatable, Sendable {
         cleanup_model = "\(cleanupModel)"
         cleanup_style = "\(CleanupStyle.parse(cleanupStyle).rawValue)"
         sense_check = "\(senseCheck)"
+        whisper_model = "\(whisperModel)"
         hotkey = "\(hotkey)"
         input_device_id = "\(inputDeviceID)"
         streaming_stt = "\(streamingSTT)"
@@ -236,6 +244,8 @@ public struct VocalisConfig: Equatable, Sendable {
             case "sense_check":
                 let v = value.lowercased()
                 config.senseCheck = (v == "true" || v == "1" || v == "yes" || v == "on")
+            case "whisper_model":
+                config.whisperModel = value.isEmpty ? defaultWhisperModel : value
             case "hotkey": config.hotkey = value.isEmpty ? defaultHotkey : value
             case "input_device_id": config.inputDeviceID = value
             case "streaming_stt":
