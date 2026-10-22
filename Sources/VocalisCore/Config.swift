@@ -28,8 +28,8 @@ public struct VocalisConfig: Equatable, Sendable {
     public static let defaultBaseURL = "https://api.openai.com/v1"
     /// Default Worker URL after `wrangler deploy` (override in config if needed).
     public static let defaultLicenseProxyURL = "https://vocalis-proxy.daniele96ligato.workers.dev"
-    /// Default STT: Grok Voice (cheapest). OpenAI options remain in Settings.
-    public static let defaultSTTModel = ModelCatalog.grokVoiceTranscribe
+    /// Default STT: Cactus Whistle (on-device, free after ~18 MB download).
+    public static let defaultSTTModel = ModelCatalog.localWhistle
     public static let defaultCleanupModel = "gpt-4o-mini"
     public static let defaultCleanupStyle = CleanupStyle.default.rawValue
     public static let defaultSenseCheck = false

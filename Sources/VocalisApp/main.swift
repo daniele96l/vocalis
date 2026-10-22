@@ -196,6 +196,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             permissions.refresh()
             syncAppState()
 
+            // Pre-fetch Whistle (~18 MB) so Local STT is ready without a Settings tap.
+            Task.detached(priority: .utility) {
+                do {
+                    try await WhistleLocalClient.prepare()
+                    NSLog("Vocalis: Whistle pre-download ready")
+                } catch {
+                    NSLog("Vocalis: Whistle pre-download skipped — \(error.localizedDescription)")
+                }
+            }
+
             if CommandLine.arguments.contains("--settings") {
                 openMain(tab: .ai)
             } else if CommandLine.arguments.contains("--permissions") {
@@ -1428,6 +1438,8 @@ struct AISettingsView: View {
     @State private var micDevices: [MicDevice] = MicDevices.listInputs()
     @State private var selectedMicUID: String = VocalisConfig.load().inputDeviceID
     @State private var selectedSTT: String = VocalisConfig.load().sttModel
+    @State private var useLocalSTT: Bool = ModelCatalog.isLocalSTT(VocalisConfig.load().sttModel)
+    @State private var lastCloudSTT: String = ModelCatalog.defaultCloudSTT
     @State private var selectedCleanup: String = VocalisConfig.load().cleanupModel
     @State private var selectedCleanupStyle: CleanupStyle = VocalisConfig.load().resolvedCleanupStyle
     @State private var senseCheck: Bool = VocalisConfig.load().senseCheck
@@ -1493,13 +1505,26 @@ struct AISettingsView: View {
                     }
                 }
 
-                settingsSectionLabel("Models")
+                settingsSectionLabel("Speech-to-text")
                 GlassCard {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("You pay on release: speech-to-text, then optional cleanup. Example ~10s hold: \(exampleHoldCost)")
-                            .font(VocalisTheme.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Picker("Source", selection: $useLocalSTT) {
+                            Text("Local").tag(true)
+                            Text("API").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: useLocalSTT) { local in
+                            switchSTTMode(local: local)
+                        }
+
+                        Text(
+                            useLocalSTT
+                                ? "On-device — free after a one-time ~18 MB download. Default: Whistle."
+                                : "Cloud STT — needs a license or API key. Example ~10s hold: \(exampleHoldCost)"
+                        )
+                        .font(VocalisTheme.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                         Toggle(isOn: $streamingSTT) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -1519,56 +1544,80 @@ struct AISettingsView: View {
                             saveStreaming(enabled)
                         }
 
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Speech-to-text")
-                                .font(VocalisTheme.caption)
-                                .foregroundStyle(.secondary)
-                            Picker("STT", selection: $selectedSTT) {
-                                ForEach(ModelCatalog.sttChoices) { choice in
-                                    Text("\(choice.title) — \(choice.detail)").tag(choice.rawValue)
-                                }
-                                if !ModelCatalog.sttChoices.contains(where: { $0.rawValue == selectedSTT }) {
-                                    Text("\(selectedSTT) (custom)").tag(selectedSTT)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .onChange(of: selectedSTT) { newValue in
-                                saveSTT(newValue)
-                            }
-                        }
-
-                        if ModelCatalog.isLocalWhistleSTT(selectedSTT) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Cactus Whistle (16.9 MB)")
+                        if useLocalSTT {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Engine")
                                     .font(VocalisTheme.caption)
                                     .foregroundStyle(.secondary)
-
-                                HStack(spacing: 8) {
-                                    Button(whistleBusy ? "Downloading…" : (WhistleLocalClient.isReady ? "Re-download" : "Download Whistle")) {
-                                        downloadWhistleModel()
+                                Picker("Local STT", selection: $selectedSTT) {
+                                    ForEach(ModelCatalog.localSTTChoices) { choice in
+                                        Text("\(choice.title) — \(choice.detail)").tag(choice.rawValue)
                                     }
-                                    .buttonStyle(AccentButtonStyle())
-                                    .disabled(whistleBusy)
-
-                                    Text(WhistleLocalClient.isReady ? "Ready on this Mac" : "Not downloaded yet")
-                                        .font(VocalisTheme.caption)
-                                        .foregroundStyle(.secondary)
                                 }
-
-                                if !whistleStatus.isEmpty {
-                                    Text(whistleStatus)
-                                        .font(VocalisTheme.caption)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .onChange(of: selectedSTT) { newValue in
+                                    saveSTT(newValue)
                                 }
+                            }
 
-                                Text("Downloads whistle.cact + Needle engine into ~/Library/Application Support/Vocalis/Whistle. Apple Silicon only. Then STT is free and offline.")
+                            if ModelCatalog.isLocalWhistleSTT(selectedSTT) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(spacing: 8) {
+                                        Text(WhistleLocalClient.isReady ? "Whistle ready on this Mac" : (whistleBusy ? "Downloading Whistle…" : "Preparing Whistle…"))
+                                            .font(VocalisTheme.caption)
+                                            .foregroundStyle(.secondary)
+                                        if whistleBusy {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        }
+                                    }
+                                    if !whistleStatus.isEmpty {
+                                        Text(whistleStatus)
+                                            .font(VocalisTheme.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    if !WhistleLocalClient.isReady && !whistleBusy {
+                                        Button("Download now") { downloadWhistleModel() }
+                                            .buttonStyle(QuietButtonStyle())
+                                    }
+                                }
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Cloud model")
                                     .font(VocalisTheme.caption)
-                                    .foregroundStyle(.tertiary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                                    .foregroundStyle(.secondary)
+                                Picker("Cloud STT", selection: $selectedSTT) {
+                                    ForEach(ModelCatalog.cloudSTTChoices) { choice in
+                                        Text("\(choice.title) — \(choice.detail)").tag(choice.rawValue)
+                                    }
+                                    if !ModelCatalog.cloudSTTChoices.contains(where: { $0.rawValue == selectedSTT }),
+                                       !ModelCatalog.isLocalSTT(selectedSTT) {
+                                        Text("\(selectedSTT) (custom)").tag(selectedSTT)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .onChange(of: selectedSTT) { newValue in
+                                    lastCloudSTT = newValue
+                                    saveSTT(newValue)
+                                }
                             }
                         }
+                    }
+                }
+
+                settingsSectionLabel("Cleanup")
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(useLocalSTT
+                             ? "Optional polish after local STT — needs a license or OpenAI key when not Off."
+                             : "Runs after speech-to-text. Example ~10s hold total: \(exampleHoldCost)")
+                            .font(VocalisTheme.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Cleanup model")
@@ -1656,16 +1705,19 @@ struct AISettingsView: View {
             config = VocalisConfig.load()
             selectedMicUID = config.inputDeviceID
             selectedSTT = config.sttModel
+            useLocalSTT = ModelCatalog.isLocalSTT(config.sttModel)
+            if !ModelCatalog.isLocalSTT(config.sttModel) {
+                lastCloudSTT = config.sttModel
+            }
             selectedCleanup = ModelCatalog.isCleanupEnabled(config.cleanupModel)
                 ? config.cleanupModel
                 : ModelCatalog.cleanupOff
             selectedCleanupStyle = config.resolvedCleanupStyle
             senseCheck = config.senseCheck
             streamingSTT = config.streamingSTT
-            if ModelCatalog.isLocalWhistleSTT(selectedSTT) {
-                whistleStatus = WhistleLocalClient.isReady
-                    ? "Whistle is ready."
-                    : "Download Whistle once (~18 MB) to use offline."
+            refreshWhistleStatus()
+            if ModelCatalog.isLocalWhistleSTT(selectedSTT), !WhistleLocalClient.isReady {
+                downloadWhistleModel()
             }
             micDevices = MicDevices.listInputs()
             state.refresh(
@@ -1677,15 +1729,51 @@ struct AISettingsView: View {
         }
     }
 
+    private func switchSTTMode(local: Bool) {
+        if local {
+            if !ModelCatalog.isLocalSTT(selectedSTT) {
+                lastCloudSTT = selectedSTT
+            }
+            selectedSTT = ModelCatalog.localWhistle
+            saveSTT(ModelCatalog.localWhistle)
+            if !WhistleLocalClient.isReady {
+                downloadWhistleModel()
+            } else {
+                refreshWhistleStatus()
+            }
+        } else {
+            let cloud = ModelCatalog.cloudSTTChoices.contains(where: { $0.rawValue == lastCloudSTT })
+                ? lastCloudSTT
+                : ModelCatalog.defaultCloudSTT
+            selectedSTT = cloud
+            saveSTT(cloud)
+        }
+    }
+
+    private func refreshWhistleStatus() {
+        if WhistleLocalClient.isReady {
+            whistleStatus = "Whistle is ready."
+        } else if whistleBusy {
+            whistleStatus = "Downloading Whistle + Needle…"
+        } else {
+            whistleStatus = "Will download automatically (~18 MB)."
+        }
+    }
+
     private func saveSTT(_ model: String) {
         do {
             var next = VocalisConfig.load()
             next.sttModel = model
             try next.save()
             config = next
+            useLocalSTT = ModelCatalog.isLocalSTT(model)
+            if !ModelCatalog.isLocalSTT(model) {
+                lastCloudSTT = model
+            }
             onModelsChanged()
             if ModelCatalog.isLocalWhistleSTT(model) {
-                state.statusMessage = "Using Local Whistle — tap Download Whistle if needed."
+                state.statusMessage = "Using Local Whistle."
+                refreshWhistleStatus()
             } else if ModelCatalog.isLocalAppleSTT(model) {
                 state.statusMessage = "Using Local Apple Speech (on-device when available)."
             } else if next.usesLicense {
@@ -1764,13 +1852,14 @@ struct AISettingsView: View {
     }
 
     private func downloadWhistleModel() {
+        guard !whistleBusy else { return }
         whistleBusy = true
-        whistleStatus = "Downloading Whistle + Needle engine…"
+        whistleStatus = "Downloading Whistle + Needle…"
         Task { @MainActor in
             do {
                 try await WhistleLocalClient.prepare()
                 whistleStatus = "Whistle ready."
-                state.statusMessage = "Local Whistle ready — STT is offline."
+                state.statusMessage = "Local Whistle ready."
             } catch {
                 whistleStatus = "Download failed: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
                 state.statusMessage = "Whistle download failed."

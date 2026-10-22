@@ -78,17 +78,20 @@ public enum ModelCatalog {
     public static let localWhistle = "local-whistle"
     public static let xaiSTTBaseURL = "https://api.x.ai/v1"
 
-    public static let sttChoices: [Choice] = [
+    public static let localSTTChoices: [Choice] = [
         Choice(
             rawValue: localWhistle,
-            title: "Local Whistle",
-            detail: "Cactus — 16.9 MB on-device, free after download"
+            title: "Whistle",
+            detail: "Cactus — 16.9 MB on-device, free"
         ),
         Choice(
             rawValue: localAppleSpeech,
-            title: "Local (Apple Speech)",
+            title: "Apple Speech",
             detail: "System speech — free, no download"
         ),
+    ]
+
+    public static let cloudSTTChoices: [Choice] = [
         Choice(
             rawValue: grokVoiceTranscribe,
             title: "Grok Voice Transcribe 2.0",
@@ -115,6 +118,10 @@ public enum ModelCatalog {
             detail: "OpenAI ≈ $0.006/min"
         ),
     ]
+
+    public static let sttChoices: [Choice] = localSTTChoices + cloudSTTChoices
+
+    public static let defaultCloudSTT = grokVoiceTranscribe
 
     public static func isGrokSTT(_ model: String) -> Bool {
         let m = model.lowercased()

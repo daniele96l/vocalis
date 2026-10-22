@@ -23,6 +23,7 @@ public final class BubbleOverlayController {
             if state != .listening {
                 model.level = 0
                 model.showingQuiet = true
+                model.quietTicks = 0
             }
         }
         ensurePanel()
@@ -48,10 +49,19 @@ public final class BubbleOverlayController {
         if model.micName != micName {
             model.micName = micName
         }
+        // Sustained quiet only — brief HFP dips must not flash "· quiet" mid-sentence.
         if model.showingQuiet {
-            if level >= 0.03 { model.showingQuiet = false }
+            if level >= 0.03 {
+                model.quietTicks = 0
+                model.showingQuiet = false
+            }
         } else if level < 0.008 {
-            model.showingQuiet = true
+            model.quietTicks += 1
+            if model.quietTicks >= 12 { // ~0.5s at 40ms meter cadence
+                model.showingQuiet = true
+            }
+        } else {
+            model.quietTicks = 0
         }
     }
 
@@ -60,6 +70,7 @@ public final class BubbleOverlayController {
             model.state = .hidden
             model.level = 0
             model.showingQuiet = true
+            model.quietTicks = 0
         }
         panel?.orderOut(nil)
     }
@@ -112,6 +123,7 @@ final class BubbleModel: ObservableObject {
     @Published var micName: String = "Microphone"
     /// Hysteresis so the label does not flicker Listening ↔ quiet on soft speech.
     var showingQuiet = true
+    var quietTicks = 0
 }
 
 struct BubbleView: View {

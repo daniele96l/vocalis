@@ -47,10 +47,9 @@ public final class AudioRecorder: NSObject {
     /// Keep AirPods HFP warm across dictations so the next hold starts instantly.
     private var keepBluetoothWarm = true
     private var chunkTask: Task<Void, Never>?
-    private var silenceWatchTask: Task<Void, Never>?
-    /// True after we have seen real mic energy this hold (silence restart only then).
-    private nonisolated(unsafe) var sawAudibleSignal = false
-    private var silenceRestarts = 0
+    /// Recovers AirPods HFP when buffers stop arriving — does not end the hold.
+    private var stallWatchTask: Task<Void, Never>?
+    private var stallRecoveries = 0
 
     public var isRecording: Bool {
         if usingAudioQueue { return audioQueue != nil }
@@ -107,10 +106,9 @@ public final class AudioRecorder: NSObject {
         keepBluetoothWarm = true
         activeDeviceName = MicDevices.displayName(forUID: preferredDeviceUID)
         writeGain = isBluetoothSession ? 6.0 : 1.0
+        stallRecoveries = 0
         setLevel(0)
         setBufferCount(0)
-        sawAudibleSignal = false
-        silenceRestarts = 0
 
         // HFP/SCO + Continuity handoff need a beat; claim path always waits.
         if isBluetoothSession, activation.routeChanged || !alreadyWarm {
@@ -119,13 +117,13 @@ public final class AudioRecorder: NSObject {
 
         try startCapture(device: device)
         startChunkTimerIfNeeded()
-        startSilenceWatchIfNeeded()
+        startStallWatchIfNeeded()
     }
 
     public func stop() throws -> URL {
         guard writeTarget != nil else { throw AudioRecorderError.notRecording }
         stopChunkTimer()
-        stopSilenceWatch()
+        stopStallWatch()
         let buffers = currentBufferCount()
         let url = writeTarget?.finish()
         tearDownCapture(deleteFile: false)
@@ -137,7 +135,7 @@ public final class AudioRecorder: NSObject {
 
     public func cancel() {
         stopChunkTimer()
-        stopSilenceWatch()
+        stopStallWatch()
         tearDownCapture(deleteFile: true)
         setLevel(0)
         if !keepBluetoothWarm {
@@ -149,7 +147,7 @@ public final class AudioRecorder: NSObject {
     public func releaseHardware() {
         keepBluetoothWarm = false
         stopChunkTimer()
-        stopSilenceWatch()
+        stopStallWatch()
         tearDownCapture(deleteFile: true)
         setLevel(0)
         finishBluetoothRoute()
@@ -196,7 +194,6 @@ public final class AudioRecorder: NSObject {
         let held = max(clamped, latestLevel * 0.82)
         latestLevel = held < 0.0005 ? 0 : held
         bufferCount += 1
-        if clamped >= 0.04 { sawAudibleSignal = true }
         levelLock.unlock()
     }
 
@@ -222,13 +219,14 @@ public final class AudioRecorder: NSObject {
         chunkTask = nil
     }
 
-    /// AirPods HFP often goes silent mid-hold (or stops delivering buffers while the
-    /// meter peak-hold stays high). Restart AudioQueue if energy dies or buffers stall.
-    private func startSilenceWatchIfNeeded() {
-        stopSilenceWatch()
+    /// When AirPods HFP stops delivering buffers, quietly recreate AudioQueue and
+    /// keep appending to the same WAV. Hold stays active until the hotkey is released.
+    private func startStallWatchIfNeeded() {
+        stopStallWatch()
         guard isBluetoothSession else { return }
-        silenceWatchTask = Task { [weak self] in
-            var silentTicks = 0
+        stallWatchTask = Task { [weak self] in
+            // Skip settle / first words — avoid false recoveries at hold start.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
             var lastBuffers = 0
             var stalledTicks = 0
             while !Task.isCancelled {
@@ -236,70 +234,42 @@ public final class AudioRecorder: NSObject {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self, self.isRecording else { return }
-                    let level = self.currentLevel()
                     let buffers = self.currentBufferCount()
-                    let heard: Bool = {
-                        self.levelLock.lock()
-                        defer { self.levelLock.unlock() }
-                        return self.sawAudibleSignal
-                    }()
-
                     if buffers == lastBuffers {
                         stalledTicks += 1
                     } else {
                         stalledTicks = 0
                         lastBuffers = buffers
                     }
-
-                    if heard, level < 0.012 {
-                        silentTicks += 1
-                    } else if !heard {
-                        silentTicks = 0
-                    } else {
-                        silentTicks = 0
-                    }
-
-                    // ~0.8s near-zero energy, or ~0.6s with no new buffers after speech.
-                    let shouldRestart = self.silenceRestarts < 4
-                        && (
-                            (heard && silentTicks >= 4)
-                            || (heard && stalledTicks >= 3)
-                            // Never heard anything but also no buffers for ~1.2s after start
-                            || (!heard && stalledTicks >= 6 && buffers < 8)
-                        )
-                    if shouldRestart {
-                        silentTicks = 0
-                        stalledTicks = 0
-                        self.restartCaptureAfterSilence()
-                        lastBuffers = self.currentBufferCount()
-                    }
+                    // ~1.2s with no new buffers after we already had audio flowing.
+                    guard self.stallRecoveries < 6, buffers >= 40, stalledTicks >= 6 else { return }
+                    stalledTicks = 0
+                    self.recoverBluetoothCaptureIfNeeded()
+                    lastBuffers = self.currentBufferCount()
                 }
             }
         }
     }
 
-    private func stopSilenceWatch() {
-        silenceWatchTask?.cancel()
-        silenceWatchTask = nil
+    private func stopStallWatch() {
+        stallWatchTask?.cancel()
+        stallWatchTask = nil
     }
 
-    private func restartCaptureAfterSilence() {
-        guard writeTarget != nil else { return }
-        silenceRestarts += 1
-        NSLog("Vocalis: mic went silent mid-hold — restarting AudioQueue (#\(silenceRestarts))")
-        // Keep the same WAV so we do not lose earlier speech.
+    private func recoverBluetoothCaptureIfNeeded() {
+        guard writeTarget != nil, isBluetoothSession else { return }
+        stallRecoveries += 1
+        NSLog("Vocalis: AirPods buffers stalled — recovering AudioQueue (#\(stallRecoveries), hold continues)")
         let existing = writeTarget
         tearDownCaptureKeepingWriter()
         writeTarget = existing
-        sawAudibleSignal = false
-        setLevel(0)
+        // Do not re-claim headset (that glitches Continuity). Just reopen the queue
+        // on the already-active default input and keep writing the same file.
         do {
-            _ = MicDevices.activateInput(uid: preferredDeviceUID, claimHeadset: true)
             let device = MicDevices.device(uid: preferredDeviceUID)
-            // Always AudioQueue after a stall — engine is what usually died.
             try startCapture(device: device, forceAudioQueue: true)
         } catch {
-            NSLog("Vocalis: silence restart failed: \(error.localizedDescription)")
+            NSLog("Vocalis: AirPods recover failed: \(error.localizedDescription)")
             writeTarget = existing
         }
     }
@@ -455,11 +425,17 @@ public final class AudioRecorder: NSObject {
             AudioQueueDispose(queue, true)
             throw AudioRecorderError.setupFailed("Mic format failed")
         }
-        let writeFormat = try Self.int16MonoFormat(sampleRate: captureRate)
+        // Mid-hold recovery must keep the same WAV — never open a new file mid-utterance.
         let target: ChunkWriteTarget
-        if abs(provisionalTarget.sampleRate - writeFormat.sampleRate) < 1 {
+        let writeFormat: AVAudioFormat
+        if let existing = writeTarget {
+            target = existing
+            writeFormat = try Self.int16MonoFormat(sampleRate: existing.sampleRate)
+        } else if abs(provisionalTarget.sampleRate - captureRate) < 1 {
             target = provisionalTarget
+            writeFormat = try Self.int16MonoFormat(sampleRate: captureRate)
         } else {
+            writeFormat = try Self.int16MonoFormat(sampleRate: captureRate)
             target = try ChunkWriteTarget(format: writeFormat)
         }
         let converter = AVAudioConverter(from: captureFormat, to: writeFormat)
