@@ -68,21 +68,21 @@ public enum ModelCatalog {
         public var detail: String
     }
 
-    /// Special cleanup value: paste Whisper text with no second API call.
+    /// Special cleanup value: paste raw STT text with no second API call.
     public static let cleanupOff = "off"
 
     public static let grokVoiceTranscribe = "grok-voice-transcribe-2.0"
     /// Apple Speech framework (on-device when supported) — free, no API key.
     public static let localAppleSpeech = "local-apple-speech"
-    /// Local OpenAI Whisper via WhisperKit (downloads once, then offline).
-    public static let localWhisper = "local-whisper"
+    /// Cactus Whistle — 16.9 MB on-device STT (https://cactuscompute.com/blog/whistle).
+    public static let localWhistle = "local-whistle"
     public static let xaiSTTBaseURL = "https://api.x.ai/v1"
 
     public static let sttChoices: [Choice] = [
         Choice(
-            rawValue: localWhisper,
-            title: "Local Whisper",
-            detail: "On-device Whisper — free after download"
+            rawValue: localWhistle,
+            title: "Local Whistle",
+            detail: "Cactus — 16.9 MB on-device, free after download"
         ),
         Choice(
             rawValue: localAppleSpeech,
@@ -123,7 +123,7 @@ public enum ModelCatalog {
     }
 
     public static func isLocalSTT(_ model: String) -> Bool {
-        isLocalWhisperSTT(model) || isLocalAppleSTT(model)
+        isLocalWhistleSTT(model) || isLocalAppleSTT(model)
     }
 
     public static func isLocalAppleSTT(_ model: String) -> Bool {
@@ -131,9 +131,9 @@ public enum ModelCatalog {
         return m == localAppleSpeech || m == "apple-speech"
     }
 
-    public static func isLocalWhisperSTT(_ model: String) -> Bool {
+    public static func isLocalWhistleSTT(_ model: String) -> Bool {
         let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return m == localWhisper || m.hasPrefix("local-whisper")
+        return m == localWhistle || m.hasPrefix("local-whistle") || m == "whistle"
     }
 
     public static let cleanupChoices: [Choice] = [

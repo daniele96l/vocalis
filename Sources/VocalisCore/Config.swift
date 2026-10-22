@@ -15,7 +15,7 @@ public struct VocalisConfig: Equatable, Sendable {
     public var cleanupStyle: String
     /// Extra final pass: “would someone really say this?” — off by default.
     public var senseCheck: Bool
-    /// WhisperKit variant when STT is Local Whisper: tiny / base / small.
+    /// Unused (kept for config.toml compat). Was WhisperKit variant.
     public var whisperModel: String
     public var hotkey: String
     /// Core Audio device UID; empty = system default input.
@@ -238,7 +238,14 @@ public struct VocalisConfig: Equatable, Sendable {
             case "license_proxy_url":
                 config.licenseProxyURL = value.isEmpty ? defaultLicenseProxyURL : value
             case "base_url": config.baseURL = value.isEmpty ? defaultBaseURL : value
-            case "stt_model": config.sttModel = value.isEmpty ? defaultSTTModel : value
+            case "stt_model":
+                let raw = value.isEmpty ? defaultSTTModel : value
+                // Migrate short-lived Local WhisperKit id → Cactus Whistle
+                if raw.lowercased().hasPrefix("local-whisper") {
+                    config.sttModel = ModelCatalog.localWhistle
+                } else {
+                    config.sttModel = raw
+                }
             case "cleanup_model": config.cleanupModel = value.isEmpty ? defaultCleanupModel : value
             case "cleanup_style": config.cleanupStyle = CleanupStyle.parse(value).rawValue
             case "sense_check":
